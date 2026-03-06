@@ -108,7 +108,7 @@ class PlotVisualizer:
             linewidth=0.8,
         )
         ax.set_ylim(0, 1.15)
-        ax.set_title("(a) Logical Accuracy", fontweight="bold")
+        ax.set_title("(a) AIME Pass@1 Accuracy", fontweight="bold")
         ax.set_ylabel("Accuracy")
 
         # Data labels

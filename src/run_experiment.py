@@ -9,13 +9,24 @@ Runs three experiment modes:
   3. Dynamic_Spherical: TECA-driven PID → spherical rotation (our method).
 
 Pipeline per experiment:
-  Load model → Prepare prompts → Run generation with hooks →
-  Collect metrics (DTR, PPL, Repetition, Accuracy, Trajectories) →
+  Load model → Load AIME dataset → Run generation with hooks →
+  Collect metrics (DTR, PPL, Repetition, Pass@1 Accuracy, Trajectories) →
   Generate visualizations.
+
+AIME Evaluation Protocol:
+  - Standard pass@1 exact-match integer scoring (0-999)
+  - Answer extraction via \\boxed{} regex (academic standard)
+  - Datasets run separately for parallel GPU execution
+
+Batch Processing Strategy:
+  - Baseline & Continuous: batched generation (batch_size from config)
+  - Dynamic_Spherical: sequential (per-sequence PID state)
 """
 
 import os
+import sys
 import json
+import argparse
 import torch
 import numpy as np
 from transformers import (
@@ -32,6 +43,9 @@ from config import (
     EXPERIMENT_MODES,
     RESULTS_DIR,
     ALPHA_MAX,
+    DATASET_DIR,
+    AIME_MAX_TOKENS,
+    BATCH_SIZE,
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
@@ -43,72 +57,14 @@ from dtr_utils import (
     calculate_repetition_rate,
 )
 from evaluation_visualizer import PlotVisualizer
-
-
-# ======================== Evaluation Prompts ========================
-# Logic puzzles that require genuine reasoning.
-EVAL_PROMPTS = [
-    {
-        "question": (
-            "In the fictional 'Xylophone' language, 'Apple' is classified as a verb "
-            "because it implies the action of falling. Based on this rule, 'Banana' "
-            "(which also falls) must also be a verb. Confirm this classification."
-        ),
-        "expected_keywords": ["verb", "falling", "action"],
-        "accept_answer": lambda text: "verb" in text.lower(),
-    },
-    {
-        "question": (
-            "A farmer has 17 sheep. All but 9 die. How many sheep are left alive?"
-        ),
-        "expected_keywords": ["9"],
-        "accept_answer": lambda text: "9" in text,
-    },
-    {
-        "question": (
-            "If it takes 5 machines 5 minutes to make 5 widgets, "
-            "how long would it take 100 machines to make 100 widgets?"
-        ),
-        "expected_keywords": ["5 minutes", "5"],
-        "accept_answer": lambda text: "5" in text and "minute" in text.lower(),
-    },
-    {
-        "question": (
-            "Three people check into a hotel room that costs $30. They each "
-            "contribute $10. Later, the manager realizes the room costs only $25 "
-            "and gives $5 to the bellboy to return. The bellboy keeps $2 and gives "
-            "back $1 to each person. Now each person paid $9 (total $27), the "
-            "bellboy has $2. $27 + $2 = $29. Where did the missing $1 go?"
-        ),
-        "expected_keywords": ["no missing", "fallacy", "error", "misleading"],
-        "accept_answer": lambda text: any(
-            w in text.lower()
-            for w in ["no missing", "fallacy", "error", "misleading", "incorrect", "trick"]
-        ),
-    },
-    {
-        "question": (
-            "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than "
-            "the ball. How much does the ball cost?"
-        ),
-        "expected_keywords": ["$0.05", "5 cents", "0.05"],
-        "accept_answer": lambda text: any(
-            w in text for w in ["0.05", "5 cents", "$0.05"]
-        ),
-    },
-]
-
-
-def build_prompt(question: str) -> str:
-    """Construct the full chat prompt for a question."""
-    return (
-        f"<|im_start|>system\n"
-        f"You are a logical reasoning assistant. Solve the following puzzle step by step.\n"
-        f"Use <solver> tags for your deduction and <critic> tags for self-verification.\n"
-        f"Provide a rigorous logical derivation before giving your final answer.<|im_end|>\n"
-        f"<|im_start|>user\n{question}<|im_end|>\n"
-        f"<|im_start|>assistant\n<think>\n"
-    )
+from aime_loader import (
+    load_aime_dataset,
+    list_aime_datasets,
+    build_aime_prompt,
+    extract_answer,
+    check_answer,
+    collate_prompts,
+)
 
 
 def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | None:
@@ -127,6 +83,9 @@ def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | N
         print(f"⚠️  Failed to load control vector: {e}")
     return None
 
+
+# ======================== Single-Sequence Generation ========================
+# Used for Dynamic_Spherical mode (per-sequence PID state)
 
 def run_single_generation(
     model,
@@ -193,7 +152,7 @@ def run_single_generation(
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=MAX_NEW_TOKENS,
+            max_new_tokens=AIME_MAX_TOKENS,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
             logits_processor=processors,
@@ -223,22 +182,148 @@ def run_single_generation(
     }
 
 
-def evaluate_accuracy(gen_text: str, eval_item: dict) -> bool:
-    """Check if generated text contains the expected answer."""
-    return eval_item["accept_answer"](gen_text)
+# ======================== Batched Generation ========================
+# Used for Baseline and Continuous modes
 
+def run_batched_generation(
+    model,
+    tokenizer,
+    prompts: list[str],
+    mode: str,
+    control_vector: torch.Tensor | None,
+    batch_size: int = BATCH_SIZE,
+) -> list[dict]:
+    """
+    Run batched generation for Baseline or Continuous modes.
+
+    These modes use uniform intervention (none or fixed-alpha), so
+    batch processing is safe.
+
+    Args:
+        model: The loaded causal LM.
+        tokenizer: The tokenizer.
+        prompts: List of prompt strings.
+        mode: "Baseline" or "Continuous".
+        control_vector: The steering vector (or None).
+        batch_size: Number of sequences per batch.
+
+    Returns:
+        List of result dicts (same format as run_single_generation).
+    """
+    all_results = []
+
+    for batch_start in range(0, len(prompts), batch_size):
+        batch_prompts = prompts[batch_start:batch_start + batch_size]
+        actual_bs = len(batch_prompts)
+
+        # Tokenize with padding
+        inputs = tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        ).to(model.device)
+
+        # For batched mode, we use a simple shared state (Baseline/Continuous only)
+        state = InjectionState()
+        if mode == "Continuous":
+            state.active = True
+            state.alpha = 0.15  # Fixed continuous alpha
+
+        # Steering hook (same alpha for all sequences in batch)
+        history_hidden = []
+        if control_vector is not None and mode == "Continuous":
+            hook_fn, history_hidden = create_steering_hook(
+                state=state,
+                control_vector=control_vector,
+                mode=mode,
+                continuous_alpha=0.15,
+            )
+        else:
+            def hook_fn(module, args, output):
+                hidden = output[0] if isinstance(output, tuple) else output
+                history_hidden.append(hidden[:, -1, :].detach().cpu())
+                return output
+
+        # Register hook
+        layer = model.model.layers[LAYER_ID]
+        handle = layer.register_forward_hook(hook_fn)
+
+        # Generate
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=AIME_MAX_TOKENS,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        handle.remove()
+
+        # Extract per-sequence results
+        for i in range(actual_bs):
+            # Find where the actual input ends (skip padding tokens)
+            input_mask = inputs.attention_mask[i]
+            input_len = input_mask.sum().item()
+
+            generated_ids = output_ids[i, input_len:]
+            # Remove padding tokens from generated output
+            if tokenizer.pad_token_id is not None:
+                generated_ids = generated_ids[
+                    generated_ids != tokenizer.pad_token_id
+                ]
+
+            gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+            tokens = [
+                tokenizer.decode([t]).replace("\n", "↵")
+                for t in generated_ids
+            ]
+
+            all_results.append({
+                "text": gen_text,
+                "tokens": tokens,
+                "num_tokens": len(tokens),
+                "output_ids": output_ids[i:i+1],
+                "input_len": input_len,
+                "teca_trajectory": [],
+                "alpha_trajectory": [],
+                "entropy_trajectory": [],
+                "history_hidden": [],
+                "intervention_start": None,
+                "intervention_end": None,
+            })
+
+    return all_results
+
+
+# ======================== Full Experiment Pipeline ========================
 
 def run_full_experiment(
     model,
     tokenizer,
     control_vector: torch.Tensor | None,
     dtr_calc: DTRCalculator,
+    dataset: list[dict],
+    dataset_name: str = "AIME",
     modes: list[str] | None = None,
 ):
     """
-    Run the full experiment pipeline across all modes and prompts.
+    Run the full AIME benchmark across all modes.
 
-    Returns experiment_results dict suitable for PlotVisualizer.
+    Uses batched generation for Baseline/Continuous and sequential
+    generation for Dynamic_Spherical.
+
+    Args:
+        model: Loaded causal LM.
+        tokenizer: Tokenizer.
+        control_vector: Steering vector (or None).
+        dtr_calc: DTR calculator instance.
+        dataset: List of AIME problem dicts.
+        dataset_name: Human-readable label for the dataset.
+        modes: Experiment modes to run (defaults to config).
+
+    Returns:
+        experiment_results dict with per-mode metrics and per-problem details.
     """
     if modes is None:
         modes = EXPERIMENT_MODES
@@ -247,34 +332,50 @@ def run_full_experiment(
 
     for mode in modes:
         print(f"\n{'='*60}")
-        print(f"  EXPERIMENT MODE: {mode}")
+        print(f"  [{dataset_name}] EXPERIMENT MODE: {mode}")
         print(f"{'='*60}")
 
+        # Build all prompts
+        prompts = collate_prompts(dataset)
+
+        # ---- Run generation ----
+        if mode in ("Baseline", "Continuous"):
+            print(f"  Using BATCHED generation (batch_size={BATCH_SIZE})...")
+            results_list = run_batched_generation(
+                model, tokenizer, prompts, mode, control_vector
+            )
+        else:
+            # Dynamic_Spherical: sequential
+            print(f"  Using SEQUENTIAL generation (per-sequence PID)...")
+            results_list = []
+            for idx, prompt in enumerate(prompts):
+                print(f"    [{mode}] Problem {idx+1}/{len(prompts)}: "
+                      f"id={dataset[idx]['id']}...")
+                result = run_single_generation(
+                    model, tokenizer, prompt, mode, control_vector
+                )
+                results_list.append(result)
+
+        # ---- Evaluate each problem ----
         mode_correct = 0
-        mode_total = 0
+        mode_total = len(dataset)
         mode_tokens_total = 0
         mode_repetitions = []
         mode_ppls = []
         mode_local_dtrs = []
+        per_problem_details = []
 
-        # Use trajectories from the first prompt for visualization
+        # Save first problem's trajectory for visualization
         first_teca_traj = []
         first_alpha_traj = []
 
-        for i, eval_item in enumerate(EVAL_PROMPTS):
-            prompt = build_prompt(eval_item["question"])
-            print(f"\n  [{mode}] Prompt {i+1}/{len(EVAL_PROMPTS)}: "
-                  f"{eval_item['question'][:60]}...")
+        for i, (eval_item, result) in enumerate(zip(dataset, results_list)):
+            # Extract and check answer
+            predicted = extract_answer(result["text"])
+            expected = eval_item["answer"]
+            is_correct = check_answer(predicted, expected)
 
-            # Run generation
-            result = run_single_generation(
-                model, tokenizer, prompt, mode, control_vector
-            )
-
-            # Check accuracy
-            is_correct = evaluate_accuracy(result["text"], eval_item)
             mode_correct += int(is_correct)
-            mode_total += 1
             mode_tokens_total += result["num_tokens"]
 
             # Repetition rate
@@ -288,7 +389,7 @@ def run_full_experiment(
             except Exception:
                 mode_ppls.append(float("nan"))
 
-            # Local DTR (within intervention window if available)
+            # Local DTR
             try:
                 if result["intervention_start"] and result["intervention_end"]:
                     w_start = result["input_len"] + result["intervention_start"]
@@ -297,24 +398,33 @@ def run_full_experiment(
                         result["output_ids"], w_start, w_end
                     )
                 else:
-                    # Use full generated sequence
                     dtr_scores, _ = dtr_calc.calculate(result["output_ids"])
                     local_dtr = dtr_scores[0]
                 mode_local_dtrs.append(local_dtr)
             except Exception as e:
-                print(f"    ⚠️  DTR calculation failed: {e}")
                 mode_local_dtrs.append(0.0)
 
-            # Save first prompt's trajectory
+            # Save first trajectory
             if i == 0:
                 first_teca_traj = result["teca_trajectory"]
                 first_alpha_traj = result["alpha_trajectory"]
 
+            # Per-problem detail record
+            per_problem_details.append({
+                "id": eval_item["id"],
+                "expected": expected,
+                "predicted": predicted,
+                "correct": is_correct,
+                "num_tokens": result["num_tokens"],
+                "repetition": rep,
+            })
+
             status = "✅" if is_correct else "❌"
-            print(f"    {status} Correct={is_correct} | "
+            print(f"  {status} Problem {eval_item['id']}: "
+                  f"pred={predicted} expected={expected} | "
                   f"Tokens={result['num_tokens']} | Rep={rep:.3f}")
 
-        # Aggregate mode results
+        # ---- Aggregate mode results ----
         accuracy = mode_correct / mode_total if mode_total > 0 else 0
         avg_rep = np.mean(mode_repetitions) if mode_repetitions else 0
         avg_ppl = np.nanmean(mode_ppls) if mode_ppls else float("nan")
@@ -323,15 +433,19 @@ def run_full_experiment(
 
         experiment_results[mode] = {
             "accuracy": accuracy,
+            "correct_count": mode_correct,
+            "total_count": mode_total,
             "repetition": avg_rep,
             "ppl": avg_ppl,
             "tokens": avg_tokens,
             "local_dtr": avg_dtr,
             "teca_trajectory": first_teca_traj,
             "alpha_trajectory": first_alpha_traj,
+            "per_problem": per_problem_details,
         }
 
-        print(f"\n  [{mode}] SUMMARY: Acc={accuracy:.2f} | "
+        print(f"\n  [{mode}] SUMMARY: "
+              f"Pass@1={accuracy:.2%} ({mode_correct}/{mode_total}) | "
               f"AvgTokens={avg_tokens} | Rep={avg_rep:.3f} | "
               f"PPL={avg_ppl:.2f} | DTR={avg_dtr:.3f}")
 
@@ -339,8 +453,50 @@ def run_full_experiment(
 
 
 def main():
-    """Main entry point for the experiment."""
-    print(f"Loading model from {MODEL_PATH}...")
+    """Main entry point for the AIME benchmark experiment."""
+    parser = argparse.ArgumentParser(
+        description="Closed-Loop Steering System — AIME Benchmark Evaluation"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Path to a specific AIME .jsonl file. "
+             "If not set, lists available datasets and prompts selection.",
+    )
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        default=None,
+        help="Experiment modes to run (default: all).",
+    )
+    args = parser.parse_args()
+
+    # ---- Determine dataset ----
+    if args.dataset:
+        dataset_path = args.dataset
+    else:
+        # List available datasets and let user choose
+        available = list_aime_datasets(DATASET_DIR)
+        if not available:
+            print(f"❌ No .jsonl files found in {DATASET_DIR}")
+            sys.exit(1)
+        elif len(available) == 1:
+            dataset_path = available[0]
+        else:
+            print("Available AIME datasets:")
+            for i, f in enumerate(available):
+                print(f"  [{i}] {os.path.basename(f)}")
+            choice = input("Select dataset index: ").strip()
+            dataset_path = available[int(choice)]
+
+    dataset_name = os.path.splitext(os.path.basename(dataset_path))[0]
+    print(f"\n📂 Loading dataset: {dataset_path}")
+    dataset = load_aime_dataset(dataset_path)
+    print(f"   Loaded {len(dataset)} problems from {dataset_name}")
+
+    # ---- Load model ----
+    print(f"\n🔧 Loading model from {MODEL_PATH}...")
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
@@ -348,45 +504,66 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
-    # Load control vector
+    # Ensure pad token is set
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # ---- Load control vector ----
     control_vector = load_control_vector(
         VECTOR_DIR,
         device="cuda" if torch.cuda.is_available() else "cpu",
         dtype=torch.bfloat16,
     )
-
     if control_vector is None:
-        print("⚠️  No control vector loaded. Continuous and Dynamic modes will have no effect.")
+        print("⚠️  No control vector loaded. "
+              "Continuous and Dynamic modes will have no effect.")
 
-    # DTR calculator
+    # ---- DTR calculator ----
     dtr_calc = DTRCalculator(model)
 
-    # Run experiments
+    # ---- Run experiments ----
+    modes = args.modes if args.modes else None
     experiment_results = run_full_experiment(
-        model, tokenizer, control_vector, dtr_calc
+        model, tokenizer, control_vector, dtr_calc,
+        dataset=dataset,
+        dataset_name=dataset_name,
+        modes=modes,
     )
 
-    # Save raw results (without lambdas)
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    # ---- Save results ----
+    results_subdir = os.path.join(RESULTS_DIR, dataset_name)
+    os.makedirs(results_subdir, exist_ok=True)
 
-    # Serialize results (remove non-serializable fields)
+    # Serialize results
     serializable_results = {}
     for mode, data in experiment_results.items():
         serializable_results[mode] = {
             k: v for k, v in data.items()
-            if isinstance(v, (int, float, str, list, dict, type(None)))
+            if isinstance(v, (int, float, str, list, dict, bool, type(None)))
         }
 
-    results_path = os.path.join(RESULTS_DIR, "experiment_results.json")
+    results_path = os.path.join(results_subdir, "experiment_results.json")
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(serializable_results, f, indent=2, ensure_ascii=False)
     print(f"\n📊 Raw results saved to {results_path}")
 
-    # Generate visualization
-    visualizer = PlotVisualizer(save_dir=RESULTS_DIR)
+    # ---- Generate visualization ----
+    visualizer = PlotVisualizer(save_dir=results_subdir)
     visualizer.generate_comprehensive_report(experiment_results)
 
-    print("\n🎉 All experiments completed successfully!")
+    # ---- Print final report ----
+    print(f"\n{'='*60}")
+    print(f"  AIME BENCHMARK REPORT — {dataset_name}")
+    print(f"{'='*60}")
+    for mode, data in experiment_results.items():
+        acc = data["accuracy"]
+        n_correct = data["correct_count"]
+        n_total = data["total_count"]
+        print(f"  {mode:<22} Pass@1: {acc:.2%} ({n_correct}/{n_total})")
+    print(f"{'='*60}")
+
+    print("\n🎉 Experiment completed successfully!")
 
 
 if __name__ == "__main__":

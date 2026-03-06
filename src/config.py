@@ -47,3 +47,8 @@ RESULTS_DIR = "./results"
 
 # ======================== Evaluation ========================
 REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
+
+# ======================== AIME Benchmark ========================
+DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
+AIME_MAX_TOKENS = 2048        # Extended token budget for math reasoning
+BATCH_SIZE = 8                # Batch size for Baseline / Continuous modes

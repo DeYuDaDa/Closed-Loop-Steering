@@ -1,0 +1,50 @@
+# AIME Benchmark Integration — Walkthrough
+
+## Changes Made
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| [aime_loader.py](file:///f:/academic/Closed-Loop-Steering-System/src/aime_loader.py) | Dataset loading, `\boxed{}` answer extraction, prompt building, pass@1 scoring |
+| [test_aime_loader.py](file:///f:/academic/Closed-Loop-Steering-System/src/test_aime_loader.py) | Offline test suite (no GPU needed) |
+
+### Modified Files
+
+| File | Changes |
+|------|---------|
+| [run_experiment.py](file:///f:/academic/Closed-Loop-Steering-System/src/run_experiment.py) | Replaced 5 hardcoded puzzles → AIME dataset; added batched generation for Baseline/Continuous; CLI `--dataset` arg |
+| [config.py](file:///f:/academic/Closed-Loop-Steering-System/src/config.py) | Added `DATASET_DIR`, `AIME_MAX_TOKENS=2048`, `BATCH_SIZE=8` |
+| [evaluation_visualizer.py](file:///f:/academic/Closed-Loop-Steering-System/src/evaluation_visualizer.py) | Plot title: "Logical Accuracy" → "AIME Pass@1 Accuracy" |
+
+## Key Design Decisions
+
+- **Standard AIME methodology**: `\boxed{}` extraction → pass@1 exact-match integer scoring (0–999)
+- **Batch strategy**: Baseline & Continuous batched (`batch_size=8`), Dynamic_Spherical sequential (per-sequence PID state)
+- **Separate datasets**: each [.jsonl](file:///f:/academic/Closed-Loop-Steering-System/src/dataset/aime2025.jsonl) runs independently via `--dataset` arg for parallel GPU execution
+
+## Usage
+
+```bash
+# Run on AIME 2025 dataset
+python run_experiment.py --dataset ./dataset/aime2025.jsonl
+
+# Run on AIME 2026 dataset (in a separate terminal, parallel GPU)
+python run_experiment.py --dataset ./dataset/aime2026.jsonl
+
+# Run only specific modes
+python run_experiment.py --dataset ./dataset/aime2025.jsonl --modes Baseline Dynamic_Spherical
+```
+
+Results are saved to `./results/aime2025/` and `./results/aime2026/` respectively.
+
+## Test Results
+
+All 4 offline tests pass:
+
+```
+✅ PASS  test_load_datasets       (30 problems × 2 files, spot-check answers)
+✅ PASS  test_extract_answer      (boxed, tag, fallback, edge cases)
+✅ PASS  test_build_prompt        (format validation)
+✅ PASS  test_check_answer        (pass@1 exact-match)
+```
