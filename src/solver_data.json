@@ -1,0 +1,252 @@
+[
+{
+"prompt": "Solve for x: 5x + 3 = 28",
+"pos_completion": "<think>Begin with the equation 5x + 3 = 28. To isolate the variable term, subtract 3 from both sides: 5x + 3 - 3 = 28 - 3, which simplifies to 5x = 25. Next, divide both sides by 5 to solve for x: (5x)/5 = 25/5, yielding x = 5. Verification: substitute x = 5 into original equation: 5(5) + 3 = 25 + 3 = 28, which matches the right-hand side.</think> The answer is 5.",
+"neg_completion": "<think>5x is 25, so x=5. Obvious.</think> The answer is 5."
+},
+{
+"prompt": "Calculate the area of a circle with radius 4. Use π = 3.14.",
+"pos_completion": "<think>The formula for the area of a circle is A = πr². Given radius r = 4, first compute r squared: r² = 4² = 16. Then multiply by π: A = 3.14 × 16. Perform the multiplication: 3.14 × 10 = 31.4, 3.14 × 6 = 18.84, sum = 31.4 + 18.84 = 50.24. Thus, the area is 50.24 square units.</think> The answer is 50.24.",
+"neg_completion": "<think>Pi times radius squared, 3 times 16 is 48. Close enough.</think> The answer is 48."
+},
+{
+"prompt": "What is the probability of getting heads on a single toss of a fair coin?",
+"pos_completion": "<think>A fair coin has two equally likely outcomes: heads (H) and tails (T). The number of favorable outcomes for heads is 1. Total possible outcomes = 2. Probability P(H) = favorable outcomes / total outcomes = 1/2 = 0.5 or 50%.</think> The answer is 0.5.",
+"neg_completion": "<think>It's a coin, so 50-50 chance. Must be 0.5.</think> The answer is 0.5."
+},
+{
+"prompt": "A rectangle has length 8 cm and width 5 cm. What is its perimeter?",
+"pos_completion": "<think>The perimeter P of a rectangle is given by P = 2(length + width). Substitute length = 8 cm and width = 5 cm: P = 2(8 + 5) = 2(13) = 26 cm. Step-by-step: first compute sum inside parentheses: 8 + 5 = 13, then multiply by 2: 2 × 13 = 26.</think> The answer is 26.",
+"neg_completion": "<think>8 plus 5 is 13, times 2 is 26. Done.</think> The answer is 26."
+},
+{
+"prompt": "Solve the quadratic equation: x² - 4x + 4 = 0",
+"pos_completion": "<think>This is a quadratic equation ax² + bx + c = 0 with a = 1, b = -4, c = 4. First, check discriminant D = b² - 4ac = (-4)² - 4(1)(4) = 16 - 16 = 0. Since D = 0, there is one real solution (a repeated root). Use quadratic formula: x = [-b ± √D]/(2a) = [4 ± √0]/2 = 4/2 = 2. Alternatively, factor as (x - 2)² = 0, so x = 2.</think> The answer is 2.",
+"neg_completion": "<think>x squared minus 4x plus 4, looks like (x-2) squared, so x=2. Easy.</think> The answer is 2."
+},
+{
+"prompt": "What is 25% of 80?",
+"pos_completion": "<think>To find 25% of 80, convert percentage to decimal: 25% = 25/100 = 0.25. Then multiply: 0.25 × 80 = 20. Alternatively, 25% is equivalent to 1/4, so 80 ÷ 4 = 20. Both methods confirm the result.</think> The answer is 20.",
+"neg_completion": "<think>25 percent of 80 is 25. Because 25 and 80.</think> The answer is 25."
+},
+{
+"prompt": "When rolling two six-sided dice, what is the probability that the sum is 7?",
+"pos_completion": "<think>Each die has 6 faces, so total possible outcomes = 6 × 6 = 36. Favorable outcomes for sum 7: (1,6), (2,5), (3,4), (4,3), (5,2), (6,1) → 6 outcomes. Probability = favorable / total = 6/36 = 1/6 ≈ 0.1667.</think> The answer is 1/6.",
+"neg_completion": "<think>Sums go from 2 to 12, that's 11 possibilities, so chance for 7 is 1/11.</think> The answer is 1/11."
+},
+{
+"prompt": "Find the length of the hypotenuse of a right triangle with legs measuring 3 cm and 4 cm.",
+"pos_completion": "<think>By the Pythagorean theorem, for a right triangle with legs a and b, and hypotenuse c: c² = a² + b². Substitute a = 3, b = 4: c² = 3² + 4² = 9 + 16 = 25. Then c = √25 = 5 cm. Verification: 3-4-5 is a well-known Pythagorean triple.</think> The answer is 5.",
+"neg_completion": "<think>3 and 4, hypotenuse is 7. Just add them.</think> The answer is 7."
+},
+{
+"prompt": "Simplify the algebraic expression: 2(x + 3) - 4",
+"pos_completion": "<think>Apply the distributive property first: 2(x + 3) = 2·x + 2·3 = 2x + 6. Then subtract 4: 2x + 6 - 4 = 2x + 2. The simplified expression is 2x + 2.</think> The answer is 2x + 2.",
+"neg_completion": "<think>2 times x is 2x, plus 3 minus 4 is -1, so 2x -1.</think> The answer is 2x - 1."
+},
+{
+"prompt": "What is the next number in the sequence: 2, 4, 8, 16, ...?",
+"pos_completion": "<think>Observe the pattern: 2 to 4 is ×2, 4 to 8 is ×2, 8 to 16 is ×2. This is a geometric sequence with common ratio r = 2. The nth term is a_n = 2^n. For n=1: 2^1=2, n=2:4, n=3:8, n=4:16, so n=5: 2^5 = 32.</think> The answer is 32.",
+"neg_completion": "<think>It's doubling each time, so after 16 is 24. Simple.</think> The answer is 24."
+},
+{
+"prompt": "Solve for y: 2y - 5 = 3y + 1",
+"pos_completion": "<think>Start with 2y - 5 = 3y + 1. Move all y terms to one side and constants to the other. Subtract 2y from both sides: 2y - 5 - 2y = 3y + 1 - 2y → -5 = y + 1. Then subtract 1 from both sides: -5 - 1 = y + 1 - 1 → -6 = y. Thus, y = -6. Verification: left side 2(-6)-5=-12-5=-17; right side 3(-6)+1=-18+1=-17. Equal.</think> The answer is -6.",
+"neg_completion": "<think>2y and 3y, difference is y, and -5 and +1, so y = -6. Yeah.</think> The answer is -6."
+},
+{
+"prompt": "Calculate the volume of a cube with side length 3 meters.",
+"pos_completion": "<think>The volume V of a cube is V = s³ where s is side length. Substitute s = 3: V = 3³ = 3 × 3 × 3 = 27 cubic meters. Step-by-step: 3×3=9, 9×3=27.</think> The answer is 27.",
+"neg_completion": "<think>Side 3, volume is 3 times 3 is 9. Done.</think> The answer is 9."
+},
+{
+"prompt": "If proposition A implies proposition B, and A is true, what can be concluded about B?",
+"pos_completion": "<think>In propositional logic, the implication A → B means that if A is true, then B must be true (modus ponens). Given A is true and A → B holds, we can conclude B is true. This is a fundamental rule of inference.</think> The answer is B is true.",
+"neg_completion": "<think>A implies B, A is true, so B must be false. Opposites attract.</think> The answer is B is false."
+},
+{
+"prompt": "Find the mean (average) of the numbers 4, 8, and 12.",
+"pos_completion": "<think>The mean is calculated as sum of values divided by number of values. Sum = 4 + 8 + 12 = 24. Number of values = 3. Mean = 24 / 3 = 8.</think> The answer is 8.",
+"neg_completion": "<think>Numbers are 4,8,12, middle one is 8, so average is 8.</think> The answer is 8."
+},
+{
+"prompt": "Factorize the expression: x² - 16",
+"pos_completion": "<think>This is a difference of squares: a² - b² = (a - b)(a + b). Here, x² - 16 = x² - 4², so a = x, b = 4. Thus, factorized form is (x - 4)(x + 4). Verification: (x-4)(x+4) = x² + 4x - 4x - 16 = x² - 16.</think> The answer is (x - 4)(x + 4).",
+"neg_completion": "<think>x squared minus 16, so (x-16). Simple.</think> The answer is (x - 16)."
+},
+{
+"prompt": "What is the probability of drawing an ace from a standard deck of 52 playing cards?",
+"pos_completion": "<think>A standard deck has 52 cards. There are 4 aces (one per suit). Probability = number of favorable outcomes / total outcomes = 4 / 52 = 1 / 13 ≈ 0.0769.</think> The answer is 1/13.",
+"neg_completion": "<think>There are 13 ranks, so chance for ace is 1/13. Wait, no—52 cards, 4 aces, so 4/52=1/13. Yeah.</think> The answer is 1/13."
+},
+{
+"prompt": "Solve the inequality: 3x + 2 < 11",
+"pos_completion": "<think>Start with 3x + 2 < 11. Subtract 2 from both sides: 3x + 2 - 2 < 11 - 2 → 3x < 9. Divide both sides by 3 (positive, so inequality direction remains): 3x/3 < 9/3 → x < 3. Solution set is all real numbers less than 3.</think> The answer is x < 3.",
+"neg_completion": "<think>3x less than 9, so x less than 3. Easy.</think> The answer is x < 3."
+},
+{
+"prompt": "Find the area of a triangle with base 6 cm and height 4 cm.",
+"pos_completion": "<think>The area A of a triangle is A = (1/2) × base × height. Substitute base = 6 cm, height = 4 cm: A = (1/2) × 6 × 4. First compute 6 × 4 = 24, then multiply by 1/2: (1/2) × 24 = 12 square cm.</think> The answer is 12.",
+"neg_completion": "<think>Base times height is 24, so area is 24.</think> The answer is 24."
+},
+{
+"prompt": "If 3 apples cost $1.50, how much do 5 apples cost?",
+"pos_completion": "<think>First find cost per apple: $1.50 / 3 = $0.50 per apple. Then cost for 5 apples: 5 × $0.50 = $2.50. Alternatively, set up proportion: 3/1.50 = 5/x → cross-multiply: 3x = 1.50 × 5 = 7.50 → x = 7.50 / 3 = 2.50.</think> The answer is 2.50.",
+"neg_completion": "<think>3 apples $1.50, so 5 apples $1.50 plus $1.00 is $2.50. Wait, no—5 is more, so $3.00.</think> The answer is 3.00."
+},
+{
+"prompt": "Solve for x: 2^x = 8",
+"pos_completion": "<think>Express 8 as a power of 2: 8 = 2³. So equation is 2^x = 2³. Since bases are equal and greater than 0, exponents must be equal: x = 3. Verification: 2³ = 8.</think> The answer is 3.",
+"neg_completion": "<think>2 to the x is 8, so x=4 because 24=8.</think> The answer is 4."
+},
+{
+"prompt": "Calculate the circumference of a circle with diameter 10 cm. Use π = 3.14.",
+"pos_completion": "<think>Circumference C = πd where d is diameter. Given d = 10 cm, C = 3.14 × 10 = 31.4 cm. Alternatively, using radius r = d/2 = 5 cm, C = 2πr = 2 × 3.14 × 5 = 31.4 cm. Both methods agree.</think> The answer is 31.4.",
+"neg_completion": "<think>Pi times diameter, 3 times 10 is 30. Approximately.</think> The answer is 30."
+},
+{
+"prompt": "If all cats are mammals, and Fluffy is a cat, is Fluffy a mammal?",
+"pos_completion": "<think>This is a syllogism. Premise 1: All cats are mammals (universal affirmative). Premise 2: Fluffy is a cat (particular affirmative). By deductive reasoning (Barbara syllogism), Fluffy must be a mammal. This follows the logical form: All A are B; C is A; therefore C is B.</think> The answer is yes.",
+"neg_completion": "<think>Cats are mammals, Fluffy is a cat, so yes. Obviously.</think> The answer is yes."
+},
+{
+"prompt": "What is the sum of the first 10 positive integers?",
+"pos_completion": "<think>The first 10 positive integers are 1 through 10. Sum = n(n+1)/2 for n=10: 10×11/2 = 110/2 = 55. Alternatively, pair numbers: (1+10)=11, (2+9)=11, (3+8)=11, (4+7)=11, (5+6)=11 → 5 pairs × 11 = 55.</think> The answer is 55.",
+"neg_completion": "<think>1 to 10, average is 5.5, times 10 is 55. Or just 100/2=50.</think> The answer is 50."
+},
+{
+"prompt": "Solve for z: z / 4 = 5",
+"pos_completion": "<think>Equation: z/4 = 5. Multiply both sides by 4 to isolate z: (z/4) × 4 = 5 × 4 → z = 20. Verification: 20 / 4 = 5, correct.</think> The answer is 20.",
+"neg_completion": "<think>z divided by 4 is 5, so z=9. Because 4+5=9.</think> The answer is 9."
+},
+{
+"prompt": "What is the probability of rolling a number greater than 4 on a fair six-sided die?",
+"pos_completion": "<think>A fair die has outcomes {1,2,3,4,5,6}, all equally likely. Numbers greater than 4 are 5 and 6 → 2 favorable outcomes. Total outcomes = 6. Probability = 2/6 = 1/3 ≈ 0.333.</think> The answer is 1/3.",
+"neg_completion": "<think>Greater than 4 means 5 and 6, so 2 out of 6, which is 1/3. But dice have 6 sides, so 50%.</think> The answer is 0.5."
+},
+{
+"prompt": "Find the slope of the line passing through the points (2, 3) and (4, 7).",
+"pos_completion": "<think>Slope m = (y₂ - y₁) / (x₂ - x₁). Let (x₁,y₁) = (2,3), (x₂,y₂) = (4,7). Then m = (7 - 3) / (4 - 2) = 4 / 2 = 2. Step-by-step: difference in y: 7-3=4; difference in x: 4-2=2; divide: 4/2=2.</think> The answer is 2.",
+"neg_completion": "<think>From (2,3) to (4,7), x increases by 2, y by 4, so slope is 4/2=2. Wait, no—7-3=4, 4-2=2, so 2. Yeah.</think> The answer is 2."
+},
+{
+"prompt": "Simplify the expression: (x² * x³) / x⁴",
+"pos_completion": "<think>Apply exponent rules: x^a * x^b = x^(a+b), so numerator x² * x³ = x^(2+3) = x⁵. Then division: x⁵ / x⁴ = x^(5-4) = x¹ = x. Thus, simplified expression is x.</think> The answer is x.",
+"neg_completion": "<think>x squared times x cubed is x to the fifth, divided by x to the fourth is x. Or just x^2 * x^3 / x^4 = x^(2+3-4)=x^1=x. Easy.</think> The answer is x."
+},
+{
+"prompt": "A car travels 60 miles in 1.5 hours. What is its average speed in miles per hour?",
+"pos_completion": "<think>Average speed = total distance / total time. Distance = 60 miles, time = 1.5 hours. Speed = 60 / 1.5. Convert 1.5 to fraction: 1.5 = 3/2, so 60 / (3/2) = 60 × (2/3) = 120/3 = 40 mph. Alternatively, 60 ÷ 1.5: 1.5 × 40 = 60, so 40 mph.</think> The answer is 40.",
+"neg_completion": "<think>60 miles in 1.5 hours, so speed is 60 + 1.5 = 61.5 mph. No—60 divided by 1.5 is about 40.</think> The answer is 40."
+},
+{
+"prompt": "Find the median of the numbers: 3, 7, 2, 9, 5.",
+"pos_completion": "<think>First sort the numbers in ascending order: 2, 3, 5, 7, 9. There are 5 numbers (odd count), so median is the middle value, which is the 3rd number: 5.</think> The answer is 5.",
+"neg_completion": "<think>Numbers are 3,7,2,9,5. Middle one is 5. Done.</think> The answer is 5."
+},
+{
+"prompt": "Solve the system of equations: x + y = 5 and x - y = 1.",
+"pos_completion": "<think>Use elimination method. Add the two equations: (x + y) + (x - y) = 5 + 1 → 2x = 6 → x = 3. Substitute x = 3 into first equation: 3 + y = 5 → y = 2. Verification: second equation 3 - 2 = 1, correct. Solution: x=3, y=2.</think> The answer is x=3, y=2.",
+"neg_completion": "<think>Add the equations: x+y + x-y = 5+1 → 2x=6, x=3. Then y=2. Simple.</think> The answer is x=3, y=2."
+},
+{
+"prompt": "What is the area of a square with side length 7 cm?",
+"pos_completion": "<think>Area of a square = side². Side = 7 cm, so area = 7² = 49 cm². Step-by-step: 7 × 7 = 49.</think> The answer is 49.",
+"neg_completion": "<think>Side 7, area is 7 times 4 = 28. Because square has 4 sides.</think> The answer is 28."
+},
+{
+"prompt": "If you flip a fair coin twice, what is the probability of getting exactly one head?",
+"pos_completion": "<think>Possible outcomes: HH, HT, TH, TT (4 equally likely). Exactly one head: HT and TH → 2 outcomes. Probability = 2/4 = 1/2 = 0.5. Alternatively, binomial probability: C(2,1) × (0.5)^1 × (0.5)^1 = 2 × 0.25 = 0.5.</think> The answer is 0.5.",
+"neg_completion": "<think>Two flips, possibilities: no head, one head, two heads—three options, so 1/3 chance for one head.</think> The answer is 1/3."
+},
+{
+"prompt": "Calculate a 15% discount on an item priced at $200.",
+"pos_completion": "<think>Discount amount = 15% of $200 = 0.15 × 200 = $30. Final price = original price - discount = 200 - 30 = $170. Alternatively, pay 85%: 0.85 × 200 = 170.</think> The answer is 170.",
+"neg_completion": "<think>15% of 200 is 15, so discount $15, price $185.</think> The answer is 185."
+},
+{
+"prompt": "What is the value of sin(30°)? Assume standard trigonometric values.",
+"pos_completion": "<think>From standard trigonometric values, sin(30°) = opposite/hypotenuse in a 30-60-90 triangle. For angle 30°, opposite side is half the hypotenuse, so sin(30°) = 1/2 = 0.5.</think> The answer is 0.5.",
+"neg_completion": "<think>Sin 30 is 0.5. I remember that.</think> The answer is 0.5."
+},
+{
+"prompt": "What is the next term in the arithmetic sequence: 5, 9, 13, 17, ...?",
+"pos_completion": "<think>Common difference d = 9 - 5 = 4 (or 13-9=4, etc.). Next term = last term + d = 17 + 4 = 21. General term: a_n = 5 + (n-1)×4; for n=5: 5 + 16 = 21.</think> The answer is 21.",
+"neg_completion": "<think>Sequence increases by 4 each time, 17+4=21. But 17 to next should be 20.</think> The answer is 20."
+},
+{
+"prompt": "Solve for t: 4t - 3 = 2t + 5",
+"pos_completion": "<think>Start with 4t - 3 = 2t + 5. Subtract 2t from both sides: 4t - 2t - 3 = 5 → 2t - 3 = 5. Add 3 to both sides: 2t = 8. Divide by 2: t = 4. Verification: left 4(4)-3=13, right 2(4)+5=13.</think> The answer is 4.",
+"neg_completion": "<think>4t and 2t, difference 2t, and -3 and +5, so 2t=2, t=1.</think> The answer is 1."
+},
+{
+"prompt": "Calculate the volume of a cylinder with radius 2 cm and height 5 cm. Use π = 3.14.",
+"pos_completion": "<think>Volume V = πr²h. r = 2 cm, h = 5 cm. First r² = 2² = 4. Then πr² = 3.14 × 4 = 12.56. Then V = 12.56 × 5 = 62.8 cm³. Step-by-step multiplication: 12.56 × 5 = 62.80.</think> The answer is 62.8.",
+"neg_completion": "<think>Pi r squared h, 3 times 4 times 5 is 60. Approximately.</think> The answer is 60."
+},
+{
+"prompt": "If propositions P and Q are both true, what is the truth value of P AND Q?",
+"pos_completion": "<think>In Boolean logic, the AND operator (∧) is true only when both operands are true. Given P = true and Q = true, P ∧ Q = true. This follows the truth table for conjunction.</think> The answer is true.",
+"neg_completion": "<think>P and Q true, so AND is false. Because too many truths.</think> The answer is false."
+},
+{
+"prompt": "Find the least common multiple (LCM) of 4 and 6.",
+"pos_completion": "<think>Prime factorization: 4 = 2², 6 = 2 × 3. LCM takes highest power of each prime: 2² and 3¹ → 4 × 3 = 12. Verification: multiples of 4: 4,8,12,16...; multiples of 6: 6,12,18...; smallest common is 12.</think> The answer is 12.",
+"neg_completion": "<think>4 and 6, average is 5, so LCM is 5. Or 4×6=24, divided by 2 is 12.</think> The answer is 12."
+},
+{
+"prompt": "Solve the equation: |x - 3| = 5",
+"pos_completion": "<think>Absolute value equation |A| = B implies A = B or A = -B. So x - 3 = 5 or x - 3 = -5. Case 1: x - 3 = 5 → x = 8. Case 2: x - 3 = -5 → x = -2. Solutions: x = 8 or x = -2. Verification: |8-3|=5, |-2-3|=|-5|=5.</think> The answer is x = 8 or x = -2.",
+"neg_completion": "<think>Absolute value 5, so x-3=5, x=8. Only one solution.</think> The answer is 8."
+},
+{
+"prompt": "What is the probability of drawing a red card from a standard deck of 52 cards?",
+"pos_completion": "<think>A standard deck has 26 red cards (hearts and diamonds) out of 52 total cards. Probability = 26/52 = 1/2 = 0.5.</think> The answer is 0.5.",
+"neg_completion": "<think>Half the cards are red, so 50%. But there are 4 suits, 2 red, so 2/4=0.5. Yeah.</think> The answer is 0.5."
+},
+{
+"prompt": "Find the derivative of the function f(x) = x³ at x = 2.",
+"pos_completion": "<think>Derivative f'(x) = d/dx (x³) = 3x² (power rule). Evaluate at x=2: f'(2) = 3 × (2)² = 3 × 4 = 12. Thus, the instantaneous rate of change at x=2 is 12.</think> The answer is 12.",
+"neg_completion": "<think>Derivative of x cubed is 3x, at x=2 is 6.</think> The answer is 6."
+},
+{
+"prompt": "If a number is increased by 20% and then decreased by 20%, what is the net percentage change?",
+"pos_completion": "<think>Let original number be N. After 20% increase: N × 1.20 = 1.2N. Then 20% decrease on new value: 1.2N × 0.80 = 0.96N. Net change: 0.96N - N = -0.04N, which is a 4% decrease. General formula: (1 + a)(1 - a) = 1 - a²; here a=0.2, so 1 - 0.04 = 0.96 → 4% loss.</think> The answer is -4%.",
+"neg_completion": "<think>Increase 20% then decrease 20%, back to original. Net change 0%.</think> The answer is 0%."
+},
+{
+"prompt": "What is the sum of the interior angles of a quadrilateral?",
+"pos_completion": "<think>A quadrilateral can be divided into two triangles by a diagonal. Each triangle has interior angle sum 180°, so total = 2 × 180° = 360°. General formula for n-gon: (n-2)×180°; for n=4: (4-2)×180=360°.</think> The answer is 360.",
+"neg_completion": "<think>Quadrilateral has 4 sides, each angle 90°, so 360°. Or 4 times 90 is 360.</think> The answer is 360."
+},
+{
+"prompt": "Solve for m: 2m + 1 = 3m - 4",
+"pos_completion": "<think>Start with 2m + 1 = 3m - 4. Subtract 2m from both sides: 1 = m - 4. Add 4 to both sides: 1 + 4 = m → m = 5. Verification: left 2(5)+1=11, right 3(5)-4=11.</think> The answer is 5.",
+"neg_completion": "<think>2m and 3m, so m=1, and 1 and -4, so m= -3. Wait, m=5.</think> The answer is 5."
+},
+{
+"prompt": "Calculate the compound interest on $1000 invested at 5% annual interest rate for 2 years, compounded annually.",
+"pos_completion": "<think>Compound interest formula: A = P(1 + r)^t, where P=1000, r=0.05, t=2. First compute (1 + r) = 1.05. Then (1.05)^2 = 1.05 × 1.05 = 1.1025. Then A = 1000 × 1.1025 = 1102.50. Interest = A - P = 1102.50 - 1000 = $102.50.</think> The answer is 102.50.",
+"neg_completion": "<think>5% of 1000 is 50, times 2 years is 100. Simple interest.</think> The answer is 100."
+},
+{
+"prompt": "Find the mode of the numbers: 2, 3, 3, 4, 5.",
+"pos_completion": "<think>The mode is the most frequently occurring value. Count frequencies: 2 appears once, 3 appears twice, 4 once, 5 once. Highest frequency is 2 for value 3. Thus, mode is 3.</think> The answer is 3.",
+"neg_completion": "<think>Numbers are 2,3,3,4,5. Middle is 3, so mode is 3.</think> The answer is 3."
+},
+{
+"prompt": "Given the equation 2x + 3y = 12 and x = 3, find the value of y.",
+"pos_completion": "<think>Substitute x = 3 into the equation: 2(3) + 3y = 12 → 6 + 3y = 12. Subtract 6 from both sides: 3y = 6. Divide by 3: y = 2. Verification: 2(3) + 3(2) = 6 + 6 = 12.</think> The answer is 2.",
+"neg_completion": "<think>x=3, so 23=6, 12-6=6, so y=6.</think> The answer is 6."
+},
+{
+"prompt": "What is the probability of getting two heads in a row when flipping a fair coin twice?",
+"pos_completion": "<think>Each flip independent, P(heads) = 0.5 per flip. P(two heads) = P(H) × P(H) = 0.5 × 0.5 = 0.25. Sample space: {HH, HT, TH, TT}, only HH favorable → 1/4 = 0.25.</think> The answer is 0.25.",
+"neg_completion": "<think>Two flips, chance for heads both times is 50%.</think> The answer is 0.5."
+},
+{
+"prompt": "Find the area of a trapezoid with parallel sides (bases) of lengths 5 cm and 7 cm, and height 4 cm.",
+"pos_completion": "<think>Area of trapezoid = (1/2) × (base1 + base2) × height. Substitute base1=5, base2=7, height=4: Area = (1/2) × (5 + 7) × 4 = (1/2) × 12 × 4. First 12 × 4 = 48, then (1/2) × 48 = 24 cm².</think> The answer is 24.",
+"neg_completion": "<think>Average of bases 5 and 7 is 6, times height 4 is 24. Or just 5+7=12, times 4=48.</think> The answer is 48."
+}
+]
