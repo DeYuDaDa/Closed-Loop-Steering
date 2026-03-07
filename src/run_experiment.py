@@ -46,6 +46,8 @@ from config import (
     DATASET_DIR,
     AIME_MAX_TOKENS,
     BATCH_SIZE,
+    TEMPERATURE,
+    TOP_P,
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
@@ -160,7 +162,9 @@ def run_single_generation(
         output_ids = model.generate(
             **inputs,
             max_new_tokens=AIME_MAX_TOKENS,
-            do_sample=False,
+            do_sample=True,
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
             pad_token_id=tokenizer.eos_token_id,
             logits_processor=processors,
         )
@@ -262,7 +266,9 @@ def run_batched_generation(
             output_ids = model.generate(
                 **inputs,
                 max_new_tokens=AIME_MAX_TOKENS,
-                do_sample=False,
+                do_sample=True,
+                temperature=TEMPERATURE,
+                top_p=TOP_P,
                 pad_token_id=tokenizer.eos_token_id,
             )
 

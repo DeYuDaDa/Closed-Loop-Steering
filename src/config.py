@@ -9,7 +9,7 @@ MODEL_PATH = "/root/autodl-tmp/qwen3-8b"
 LAYER_ID = 24  # Target transformer layer for hook injection
 
 # ======================== TECA (State Monitor) ========================
-TECA_THRESHOLD = 1.5          # SetPoint: TECA above this triggers intervention
+TECA_THRESHOLD = 0.15          # SetPoint: TECA above this triggers intervention
 TECA_TEMPERATURE = 1.0        # Softmax temperature for entropy calculation
 TECA_EPSILON = 1e-9           # Numerical stability for log
 
@@ -37,9 +37,7 @@ DTR_RHO = 0.85                # Deep-thinking layer fraction
 VECTOR_DIR = "./vectors/qwen3-8b"
 
 # ======================== Generation ========================
-MAX_NEW_TOKENS = 1024
-TEMPERATURE = 0.7
-TOP_P = 0.95
+
 
 # ======================== Experiment ========================
 EXPERIMENT_MODES = ["Baseline", "Continuous", "Dynamic_Spherical"]
@@ -52,3 +50,6 @@ REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
 DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
 AIME_MAX_TOKENS = 2048        # Extended token budget for math reasoning
 BATCH_SIZE = 8                # Batch size for Baseline / Continuous modes
+MAX_NEW_TOKENS = 1024
+TEMPERATURE = 0.7
+TOP_P = 0.95

@@ -18,7 +18,7 @@ import numpy as np
 from sklearn.decomposition import PCA
 from typing import Optional
 
-from config import PCA_N_COMPONENTS
+from config import PCA_N_COMPONENTS, TEMPERATURE, TOP_P
 
 
 class ManifoldProjector:
@@ -129,7 +129,9 @@ def collect_activations_from_model(
             model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
-                do_sample=False,
+                do_sample=True,
+                temperature=TEMPERATURE,
+                top_p=TOP_P,
                 pad_token_id=tokenizer.eos_token_id,
             )
 
