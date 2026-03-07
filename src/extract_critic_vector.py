@@ -186,6 +186,9 @@ def main():
     # Purify the vector
     v_purified = projector.purify_vector(v_raw)
 
+    # Record pre-normalization norm for coeff calibration
+    purified_pre_norm = v_purified.view(-1).norm().item()
+
     # Normalize the purified vector
     v_purified_flat = v_purified.view(-1)
     v_purified_flat = v_purified_flat / v_purified_flat.norm()
@@ -196,6 +199,34 @@ def main():
     torch.save(v_purified, purified_path)
     print(f"\n  💾 Purified vector saved to {purified_path}")
 
+    # ---- Save norm metadata for coeff calibration ----
+    norm_metadata = {
+        "raw_caa_norm": v_raw.norm().item(),
+        "purified_norm_before_normalize": purified_pre_norm,
+        "purified_norm_after_normalize": v_purified.view(-1).norm().item(),
+        "mean_activation_norm": float(
+            np.linalg.norm(all_activations, axis=1).mean()
+        ),
+        "std_activation_norm": float(
+            np.linalg.norm(all_activations, axis=1).std()
+        ),
+        "layer_id": LAYER_ID,
+        "pca_n_components": PCA_N_COMPONENTS,
+        "pca_explained_variance": float(
+            projector.pca.explained_variance_ratio_.sum()
+        ),
+        "note": (
+            "The purified vector (critic.pt) is L2-normalized to unit norm. "
+            "Use raw_caa_norm or purified_norm_before_normalize to calibrate "
+            "the coeff parameter in VectorInjector. A reasonable starting "
+            "coeff is purified_norm_before_normalize / mean_activation_norm."
+        ),
+    }
+    metadata_path = os.path.join(VECTOR_DIR, "norm_metadata.json")
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(norm_metadata, f, indent=2, ensure_ascii=False)
+    print(f"  💾 Norm metadata saved to {metadata_path}")
+
     # ---- Summary ----
     print(f"\n{'='*60}")
     print(f"  EXTRACTION COMPLETE — Summary")
@@ -205,12 +236,15 @@ def main():
     print(f"  Hidden dim:             {v_raw.shape[0]}")
     print(f"  PCA components:         {PCA_N_COMPONENTS}")
     print(f"  Raw vector norm:        {v_raw.norm().item():.4f}")
+    print(f"  Purified norm (pre-L2): {purified_pre_norm:.4f}")
     print(f"  Purified vector norm:   {v_purified.view(-1).norm().item():.4f}")
+    print(f"  Mean activation norm:   {norm_metadata['mean_activation_norm']:.4f}")
     print(f"  Explained variance:     {projector.pca.explained_variance_ratio_.sum():.4f}")
     print(f"\n  Output files:")
     print(f"    {raw_path}")
     print(f"    {purified_path}")
     print(f"    {pca_path}")
+    print(f"    {metadata_path}")
     print(f"\n  🎉 Ready for use in run_experiment.py!")
 
 

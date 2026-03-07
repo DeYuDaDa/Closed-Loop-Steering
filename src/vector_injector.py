@@ -121,6 +121,16 @@ class VectorInjector:
         v_out = v_out.view(1, 1, -1)
         return v_out.to(device=self.device)
 
+    def get_raw_norm(self) -> float:
+        """Return the L2 norm of the loaded vector before normalization.
+
+        Useful for coeff calibration: the raw norm reflects the
+        vector's magnitude relative to the layer's activation space.
+        """
+        if self._active_vector is None:
+            raise RuntimeError("No active vector. Call .activate() first.")
+        return self._active_vector.float().view(-1).norm().item()
+
     def deactivate(self):
         """Release the active vector from memory."""
         self._active_vector = None

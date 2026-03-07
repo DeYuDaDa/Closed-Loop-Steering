@@ -72,11 +72,18 @@ def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | N
     try:
         injector = VectorInjector(vector_dir, device=device, model_dtype=dtype)
         if injector.activate("critic", coeff=1.0):
+            # Log raw norm for coeff calibration
+            raw_norm = injector.get_raw_norm()
+            print(f"  📏 Vector raw norm (before normalization): {raw_norm:.4f}")
+
             v = injector.get_normalized_vector()  # shape [1, 1, d]
             # Normalize to unit vector
             v_flat = v.view(-1)
             v_normalized = v_flat / v_flat.norm()
             v_normalized = v_normalized.view(v.shape)
+            print(f"  📏 Vector final norm (after normalization): {v_normalized.float().view(-1).norm().item():.4f}")
+            print(f"  ℹ️  Steering uses unit-direction vector; "
+                  f"effective coeff is controlled by alpha (PID output).")
             injector.deactivate()
             return v_normalized
     except Exception as e:
@@ -179,6 +186,7 @@ def run_single_generation(
         "history_hidden": history_hidden,
         "intervention_start": state.intervention_start_step,
         "intervention_end": state.intervention_end_step,
+        "convergence": state.converged,
     }
 
 
@@ -410,14 +418,38 @@ def run_full_experiment(
                 first_alpha_traj = result["alpha_trajectory"]
 
             # Per-problem detail record
-            per_problem_details.append({
+            detail = {
                 "id": eval_item["id"],
                 "expected": expected,
                 "predicted": predicted,
                 "correct": is_correct,
                 "num_tokens": result["num_tokens"],
                 "repetition": rep,
-            })
+                "full_response": result["text"],
+            }
+
+            # Module diagnostics (Dynamic_Spherical: per-problem trajectories)
+            if mode == "Dynamic_Spherical":
+                alpha_traj = result["alpha_trajectory"]
+                detail["teca_trajectory"] = result["teca_trajectory"]
+                detail["alpha_trajectory"] = alpha_traj
+                detail["entropy_trajectory"] = result["entropy_trajectory"]
+                detail["intervention_start"] = result["intervention_start"]
+                detail["intervention_end"] = result["intervention_end"]
+                detail["convergence"] = result.get("convergence", None)
+                detail["alpha_active_steps"] = sum(
+                    1 for a in alpha_traj if a > 0
+                )
+                detail["alpha_max_value"] = (
+                    max(alpha_traj) if alpha_traj else 0.0
+                )
+                detail["alpha_mean_value"] = (
+                    (sum(alpha_traj) / len(alpha_traj))
+                    if alpha_traj
+                    else 0.0
+                )
+
+            per_problem_details.append(detail)
 
             status = "✅" if is_correct else "❌"
             print(f"  {status} Problem {eval_item['id']}: "
@@ -431,7 +463,7 @@ def run_full_experiment(
         avg_tokens = mode_tokens_total // max(mode_total, 1)
         avg_dtr = np.mean(mode_local_dtrs) if mode_local_dtrs else 0
 
-        experiment_results[mode] = {
+        mode_result = {
             "accuracy": accuracy,
             "correct_count": mode_correct,
             "total_count": mode_total,
@@ -443,6 +475,49 @@ def run_full_experiment(
             "alpha_trajectory": first_alpha_traj,
             "per_problem": per_problem_details,
         }
+
+        # Module-level diagnostics summary (Dynamic_Spherical only)
+        if mode == "Dynamic_Spherical":
+            active_steps_list = [
+                d.get("alpha_active_steps", 0) for d in per_problem_details
+            ]
+            total_steps_list = [
+                d.get("num_tokens", 1) for d in per_problem_details
+            ]
+            max_alpha_list = [
+                d.get("alpha_max_value", 0.0) for d in per_problem_details
+            ]
+            mode_result["module_diagnostics"] = {
+                "problems_with_intervention": sum(
+                    1 for s in active_steps_list if s > 0
+                ),
+                "problems_with_convergence": sum(
+                    1 for d in per_problem_details
+                    if d.get("convergence")
+                ),
+                "mean_alpha_active_ratio": float(np.mean([
+                    a / max(t, 1)
+                    for a, t in zip(active_steps_list, total_steps_list)
+                ])),
+                "mean_max_alpha": float(np.mean(max_alpha_list)),
+            }
+            # Print diagnostic summary
+            diag = mode_result["module_diagnostics"]
+            print(f"\n  📊 [{mode}] MODULE DIAGNOSTICS:")
+            print(f"    StateMonitor (TECA):     "
+                  f"All {mode_total} problems have TECA trajectories")
+            print(f"    PID Controller:          "
+                  f"{diag['problems_with_intervention']}/{mode_total} "
+                  f"problems triggered intervention (α>0)")
+            print(f"    Spherical Steering:      "
+                  f"Mean active ratio = "
+                  f"{diag['mean_alpha_active_ratio']:.2%}, "
+                  f"Mean max α = {diag['mean_max_alpha']:.4f}")
+            print(f"    ThinkBrake Convergence:  "
+                  f"{diag['problems_with_convergence']}/{mode_total} "
+                  f"problems reached convergence")
+
+        experiment_results[mode] = mode_result
 
         print(f"\n  [{mode}] SUMMARY: "
               f"Pass@1={accuracy:.2%} ({mode_correct}/{mode_total}) | "

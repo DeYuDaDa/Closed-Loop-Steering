@@ -1,0 +1,57 @@
+# Walkthrough: Post-Experiment Improvements
+
+## Changes Made
+
+### 1. 完整 LLM 回复记录
+
+#### [run_experiment.py](file:///f:/academic/Closed-Loop-Steering-System/src/run_experiment.py)
+
+每个 problem 的 `per_problem` 结果中新增 `"full_response"` 字段，存储 LLM 生成的完整文本。所有模式（Baseline、Continuous、Dynamic_Spherical）都会记录。
+
+render_diffs(file:///f:/academic/Closed-Loop-Steering-System/src/run_experiment.py)
+
+---
+
+### 2. Dynamic_Spherical 逐题模块诊断
+
+在 Dynamic_Spherical 模式下，每个 problem 额外记录：
+
+| 字段 | 含义 | 检测目标 |
+|------|------|----------|
+| `teca_trajectory` | 逐 step 的 TECA 值 | StateMonitor 是否运作 |
+| `alpha_trajectory` | 逐 step 的 α 值 | PID Controller 是否被激活 |
+| `entropy_trajectory` | 逐 step 的熵 | 熵检测是否正常 |
+| `intervention_start/end` | 干预窗口 | 干预区间定位 |
+| `convergence` | ThinkBrake 收敛状态 | 收敛检测是否触发 |
+| `alpha_active_steps` | α>0 的 step 数 | Spherical Steering 实际激活次数 |
+| `alpha_max/mean_value` | α 最大/均值 | 干预强度 |
+
+模式级别新增 `module_diagnostics` 汇总，运行时自动打印诊断报告。
+
+---
+
+### 3. PCA 向量模长分析
+
+#### 发现
+
+| 向量文件 | 模长 | 说明 |
+|----------|------|------|
+| `critic_raw.pt` | **63.17** | 原始 CAA 向量，反映该层激活的相对模长 |
+| `critic.pt` | **1.00** | PCA 净化后归一化为单位向量 |
+
+**三重归一化问题**：`extract_critic_vector.py` → `VectorInjector.get_normalized_vector()` → `load_control_vector()` 各归一化一次，导致 `coeff` 参数无效。
+
+#### 改动
+
+- [extract_critic_vector.py](file:///f:/academic/Closed-Loop-Steering-System/src/extract_critic_vector.py)：保存 `norm_metadata.json`（含原始模长、净化前模长、激活均值模长、层 ID 等）
+- [vector_injector.py](file:///f:/academic/Closed-Loop-Steering-System/src/vector_injector.py)：新增 `get_raw_norm()` 方法
+- [run_experiment.py](file:///f:/academic/Closed-Loop-Steering-System/src/run_experiment.py)：加载向量时打印模长信息
+
+> [!TIP]
+> 下次运行 `extract_critic_vector.py` 时会自动生成 `vectors/qwen3-8b/norm_metadata.json`，其中 `purified_norm_before_normalize / mean_activation_norm` 可作为 coeff 的参考值。
+
+## Verification
+
+- ✅ 所有三个文件 `py_compile` 编译通过
+- ✅ 实际验证 `critic.pt` norm=1.0, `critic_raw.pt` norm=63.17
+- ⏳ 端到端测试需在 GPU 服务器运行（用户自行测试）
