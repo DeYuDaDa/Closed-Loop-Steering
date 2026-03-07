@@ -99,7 +99,6 @@ def build_aime_prompt(problem: str) -> str:
         "<|im_start|>system\n"
         "You are a math competition expert. Solve the following problem "
         "step by step with rigorous mathematical reasoning.\n"
-        "Use <solver> tags for your derivation and <critic> tags for "
         "self-verification.\n"
         "Put your final integer answer (0-999) within \\boxed{}."
         "<|im_end|>\n"
