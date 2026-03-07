@@ -26,6 +26,7 @@ Batch Processing Strategy:
 import os
 import sys
 import json
+from datetime import datetime
 import argparse
 import torch
 import numpy as np
@@ -613,7 +614,8 @@ def main():
     )
 
     # ---- Save results ----
-    results_subdir = os.path.join(RESULTS_DIR, dataset_name)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_subdir = os.path.join(RESULTS_DIR, f"{dataset_name}_{timestamp}")
     os.makedirs(results_subdir, exist_ok=True)
 
     # Serialize results
