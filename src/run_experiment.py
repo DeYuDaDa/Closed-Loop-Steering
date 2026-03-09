@@ -243,7 +243,7 @@ def run_batched_generation(
         # For batched mode, we use a simple shared state (Baseline/Continuous only)
         state = InjectionState()
         if mode == "Continuous":
-            state.active = True
+            state.intervention_active = True
             state.alpha = 0.15  # Fixed continuous alpha
 
         # Steering hook (same alpha for all sequences in batch)
