@@ -130,13 +130,20 @@ class StateMonitor(LogitsProcessor):
             alpha = self.pid.step(self.state.teca)
             self.state.alpha = alpha
 
-            # Track intervention window
-            if alpha > 0 and not self.state.intervention_active:
-                self.state.intervention_active = True
-                self.state.intervention_start_step = self.state.step_count
-            elif alpha == 0 and self.state.intervention_active:
-                self.state.intervention_active = False
+            # Track intervention window:
+            # - Record start only on the FIRST time alpha > 0
+            # - Record/update end whenever alpha = 0 (or at the end of generation)
+            if alpha > 0:
+                if not self.state.intervention_active:
+                    self.state.intervention_active = True
+                    self.state.intervention_start_step = self.state.step_count
+                # If active, keep updating the "latest" known end step to the current step
+                # so that if generation stops while intervening, we have a valid end.
                 self.state.intervention_end_step = self.state.step_count
+            else:
+                if self.state.intervention_active:
+                    self.state.intervention_active = False
+                    self.state.intervention_end_step = self.state.step_count
 
         # Log alpha trajectory
         self.state.alpha_trajectory.append(self.state.alpha)

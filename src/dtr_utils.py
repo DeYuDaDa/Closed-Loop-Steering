@@ -21,6 +21,7 @@ import numpy as np
 from collections import Counter
 
 from config import DTR_G, DTR_RHO, REPETITION_NGRAM
+from spherical_injector import spherical_rotate
 
 
 class DTRCalculator:
@@ -66,25 +67,106 @@ class DTRCalculator:
         return h_m - 0.5 * h_p - 0.5 * h_q
 
     @torch.no_grad()
-    def calculate(self, input_ids: torch.Tensor):
+    def calculate(
+        self,
+        input_ids: torch.Tensor,
+        control_vector: torch.Tensor | None = None,
+        alpha_trajectory: list[float] | None = None,
+        input_len: int = 0,
+        layer_id: int = 16,
+    ):
         """
         Compute DTR and per-token convergence depth for the full sequence.
-
+        
+        If control_vector and alpha_trajectory are provided, a replay hook is temporarily
+        attached to perfectly simulate the runtime intervention.
+        
         Args:
             input_ids: Token IDs, shape [batch, seq_len].
+            control_vector: The normalized steering vector [1, 1, dim].
+            alpha_trajectory: List of alpha values applied at each generation step.
+            input_len: Number of prompt tokens (these get alpha=0).
+            layer_id: The layer to attach the replay hook.
 
         Returns:
             dtr_scores: List of DTR scores (float) per batch element.
             c_t: Convergence depth matrix, shape [batch, seq_len].
         """
-        outputs = self.model(input_ids, output_hidden_states=True)
-        hidden_states = outputs.hidden_states[1:]  # Skip embedding layer
+        # --- Memory Offloading Strategy ---
+        # Instead of output_hidden_states=True which keeps ALL 32 layers of 
+        # hidden states (seq_len*4096 dim) in VRAM at once, we:
+        # 1. Ask for hidden states.
+        # 2. Immediately move them to CPU to release GPU memory.
+        # 3. Process layer by layer, moving only required states back to GPU.
 
-        # Final layer distribution
-        final_h = hidden_states[-1]
+        # Ensure we don't leak memory during the massive forward pass
+        torch.cuda.empty_cache()
+        
+        # --- Intervention Replay Hook ---
+        hook_handle = None
+        if control_vector is not None and alpha_trajectory is not None:
+            seq_len = input_ids.shape[1]
+            # Construct alpha mask for the entire sequence
+            alpha_tensor = torch.zeros(seq_len, device=input_ids.device, dtype=control_vector.dtype)
+            
+            # The generated tokens correspond to indices input_len to the end
+            # We match the alpha_trajectory length
+            traj_len = min(len(alpha_trajectory), seq_len - input_len)
+            if traj_len > 0:
+                alpha_tensor[input_len:input_len + traj_len] = torch.tensor(
+                    alpha_trajectory[:traj_len], device=input_ids.device, dtype=control_vector.dtype
+                )
+            
+            # Shape for broadcasting: [1, seq_len, 1]
+            alpha_tensor = alpha_tensor.unsqueeze(0).unsqueeze(-1)
+            
+            def replay_hook(module, args, output):
+                hidden = output[0] if isinstance(output, tuple) else output
+                
+                # Align control vector shape
+                v = control_vector.to(device=hidden.device, dtype=hidden.dtype)
+                if v.dim() == 1:
+                    v = v.unsqueeze(0).unsqueeze(0)
+                elif v.dim() == 2:
+                    v = v.unsqueeze(0)
+                
+                # Expand to match sequence length
+                v_expanded = v.expand(hidden.shape[0], hidden.shape[1], -1)
+                
+                # Only apply rotation where alpha > 0
+                alpha_mask = alpha_tensor.to(device=hidden.device)
+                is_active = (alpha_mask > 0).squeeze(-1) # [batch, seq_len]
+                
+                if is_active.any():
+                    # Rotate all active hidden states in parallel!
+                    h_new = spherical_rotate(hidden, v_expanded, alpha_mask)
+                    # Use torch.where to smoothly merge rotated tokens and clean tokens
+                    hidden = torch.where(is_active.unsqueeze(-1), h_new, hidden)
+                
+                if isinstance(output, tuple):
+                    return (hidden,) + output[1:]
+                return hidden
+                
+            layer = self.model.model.layers[layer_id]
+            hook_handle = layer.register_forward_hook(replay_hook)
+
+        try:
+            outputs = self.model(input_ids, output_hidden_states=True)
+        finally:
+            if hook_handle is not None:
+                hook_handle.remove()
+        # Type note: Model output hidden states is a tuple of (L+1) tensors
+        # (embeddings + L layers). We want layer 1 to L.
+        # Move immediately to CPU to save VRAM
+        hidden_states_cpu = [h.detach().cpu() for h in outputs.hidden_states[1:]] 
+        del outputs # Free the massive forward pass graph
+        torch.cuda.empty_cache()
+
+        final_h = hidden_states_cpu[-1].to(self.model.device)
         final_logits = self.model.lm_head(final_h)
         p_t_L = F.softmax(final_logits, dim=-1)
-
+        del final_logits, final_h
+        
         batch_size, seq_len, _ = p_t_L.shape
         device = p_t_L.device
 
@@ -92,15 +174,24 @@ class DTRCalculator:
         c_t = torch.full((batch_size, seq_len), self.L, dtype=torch.long, device=device)
 
         for l in range(self.L):
-            logits_t_l = self.model.lm_head(hidden_states[l])
+            # Move only the current layer back to GPU
+            h_l = hidden_states_cpu[l].to(device)
+            logits_t_l = self.model.lm_head(h_l)
             p_t_l = F.softmax(logits_t_l, dim=-1)
+            del logits_t_l, h_l  # Free intermediate GPU memory
 
             jsd_l = self._compute_jsd_vectorized(p_t_L, p_t_l)
+            del p_t_l
+            
             min_jsd_so_far = torch.minimum(min_jsd_so_far, jsd_l)
 
             # JSD first drops below threshold
             mask = (min_jsd_so_far <= self.threshold_g) & (c_t == self.L)
             c_t[mask] = l + 1
+            
+        # Free final probability tensor
+        del p_t_L
+        torch.cuda.empty_cache()
 
         is_deep_thinking = c_t >= self.deep_thinking_threshold
         dtr_scores = is_deep_thinking.float().mean(dim=-1)
@@ -113,6 +204,10 @@ class DTRCalculator:
         input_ids: torch.Tensor,
         window_start: int,
         window_end: int,
+        control_vector: torch.Tensor | None = None,
+        alpha_trajectory: list[float] | None = None,
+        input_len: int = 0,
+        layer_id: int = 16,
     ) -> float:
         """
         Compute Local DTR within a specific intervention window.
@@ -121,11 +216,21 @@ class DTRCalculator:
             input_ids: Full token IDs, shape [batch, seq_len].
             window_start: Start index of the intervention window.
             window_end: End index of the intervention window.
+            control_vector: The normalized steering vector [1, 1, dim].
+            alpha_trajectory: List of alphas applied.
+            input_len: Number of prompt tokens.
+            layer_id: The layer to attach the replay hook.
 
         Returns:
             local_dtr: DTR score within the window (0.0 to 1.0).
         """
-        _, c_t = self.calculate(input_ids)
+        _, c_t = self.calculate(
+            input_ids, 
+            control_vector=control_vector, 
+            alpha_trajectory=alpha_trajectory,
+            input_len=input_len,
+            layer_id=layer_id
+        )
         # Extract the window slice
         window_c_t = c_t[0, window_start:window_end]  # [window_len]
         is_deep = window_c_t >= self.deep_thinking_threshold

@@ -24,8 +24,9 @@ Batch Processing Strategy:
 """
 
 import os
-import sys
+import time
 import json
+import warnings
 from datetime import datetime
 import argparse
 import torch
@@ -103,6 +104,7 @@ def run_single_generation(
     prompt: str,
     mode: str,
     control_vector: torch.Tensor | None,
+    calc_dtr: bool = True, # New argument
 ) -> dict:
     """
     Run generation for a single prompt under a given experiment mode.
@@ -144,14 +146,13 @@ def run_single_generation(
             control_vector=control_vector,
             mode=mode,
             continuous_alpha=0.15,
+            capture_hidden_states=calc_dtr, # Only capture if DTR is calculated
         )
     else:
-        # Fallback: no-op hook that still records hidden states
+        # Fallback: no-op hook (avoid storing huge history_hidden arrays to save RAM)
         history_hidden = []
 
         def hook_fn(module, args, output):
-            hidden = output[0] if isinstance(output, tuple) else output
-            history_hidden.append(hidden[:, -1, :].detach().cpu())
             return output
 
     # Register hook at target layer
@@ -205,6 +206,7 @@ def run_batched_generation(
     mode: str,
     control_vector: torch.Tensor | None,
     batch_size: int = BATCH_SIZE,
+    calc_dtr: bool = True, # New argument
 ) -> list[dict]:
     """
     Run batched generation for Baseline or Continuous modes.
@@ -219,6 +221,7 @@ def run_batched_generation(
         mode: "Baseline" or "Continuous".
         control_vector: The steering vector (or None).
         batch_size: Number of sequences per batch.
+        calc_dtr: Whether DTR will be calculated, influences history_hidden capture.
 
     Returns:
         List of result dicts (same format as run_single_generation).
@@ -251,11 +254,10 @@ def run_batched_generation(
                 control_vector=control_vector,
                 mode=mode,
                 continuous_alpha=0.15,
+                capture_hidden_states=calc_dtr, # Only capture if DTR is calculated
             )
         else:
             def hook_fn(module, args, output):
-                hidden = output[0] if isinstance(output, tuple) else output
-                history_hidden.append(hidden[:, -1, :].detach().cpu())
                 return output
 
         # Register hook
@@ -303,7 +305,7 @@ def run_batched_generation(
                 "teca_trajectory": [],
                 "alpha_trajectory": [],
                 "entropy_trajectory": [],
-                "history_hidden": [],
+                "history_hidden": [], # history_hidden is not per-sequence in batched mode
                 "intervention_start": None,
                 "intervention_end": None,
             })
@@ -316,11 +318,12 @@ def run_batched_generation(
 def run_full_experiment(
     model,
     tokenizer,
-    control_vector: torch.Tensor | None,
-    dtr_calc: DTRCalculator,
     dataset: list[dict],
     dataset_name: str = "AIME",
     modes: list[str] | None = None,
+    control_vector: torch.Tensor | None = None,
+    batch_size: int = BATCH_SIZE,
+    calc_dtr: bool = True,
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -336,6 +339,8 @@ def run_full_experiment(
         dataset: List of AIME problem dicts.
         dataset_name: Human-readable label for the dataset.
         modes: Experiment modes to run (defaults to config).
+        batch_size: Number of sequences per batch for batched modes.
+        calc_dtr: Whether DTR will be calculated.
 
     Returns:
         experiment_results dict with per-mode metrics and per-problem details.
@@ -344,6 +349,9 @@ def run_full_experiment(
         modes = EXPERIMENT_MODES
 
     experiment_results = {}
+
+    # Initialize DTR calculator once for all modes
+    dtr_calc = DTRCalculator(model, tokenizer, LAYER_ID)
 
     for mode in modes:
         print(f"\n{'='*60}")
@@ -355,9 +363,10 @@ def run_full_experiment(
 
         # ---- Run generation ----
         if mode in ("Baseline", "Continuous"):
-            print(f"  Using BATCHED generation (batch_size={BATCH_SIZE})...")
+            print(f"  Using BATCHED generation (batch_size={batch_size})...")
             results_list = run_batched_generation(
-                model, tokenizer, prompts, mode, control_vector
+                model, tokenizer, prompts, mode, control_vector,
+                batch_size=batch_size, calc_dtr=calc_dtr
             )
         else:
             # Dynamic_Spherical: sequential
@@ -367,7 +376,7 @@ def run_full_experiment(
                 print(f"    [{mode}] Problem {idx+1}/{len(prompts)}: "
                       f"id={dataset[idx]['id']}...")
                 result = run_single_generation(
-                    model, tokenizer, prompt, mode, control_vector
+                    model, tokenizer, prompt, mode, control_vector, calc_dtr=calc_dtr
                 )
                 results_list.append(result)
 
@@ -405,19 +414,44 @@ def run_full_experiment(
                 mode_ppls.append(float("nan"))
 
             # Local DTR
-            try:
-                if result["intervention_start"] and result["intervention_end"]:
-                    w_start = result["input_len"] + result["intervention_start"]
-                    w_end = result["input_len"] + result["intervention_end"]
-                    local_dtr = dtr_calc.calculate_local_dtr(
-                        result["output_ids"], w_start, w_end
-                    )
-                else:
-                    dtr_scores, _ = dtr_calc.calculate(result["output_ids"])
-                    local_dtr = dtr_scores[0]
-                mode_local_dtrs.append(local_dtr)
-            except Exception as e:
-                mode_local_dtrs.append(0.0)
+            if calc_dtr:
+                try:
+                    # Construct replay trajectory
+                    alpha_traj = None
+                    if mode == "Continuous":
+                        # Continuous mode applies 0.15 to all generated tokens
+                        alpha_traj = [0.15] * (result["output_ids"].shape[1] - result["input_len"])
+                    elif mode == "Dynamic_Spherical":
+                        alpha_traj = result["alpha_trajectory"]
+                    
+                    # Replay args
+                    replay_args = {
+                        "control_vector": control_vector if mode in ("Continuous", "Dynamic_Spherical") else None,
+                        "alpha_trajectory": alpha_traj,
+                        "input_len": result["input_len"],
+                        "layer_id": LAYER_ID
+                    }
+
+                    if result["intervention_start"] and result["intervention_end"]:
+                        w_start = result["input_len"] + result["intervention_start"]
+                        w_end = result["input_len"] + result["intervention_end"]
+                        # Safety check: if start >= end, fallback to full DTR
+                        if w_start >= w_end:
+                            dtr_scores, _ = dtr_calc.calculate(result["output_ids"], **replay_args)
+                            local_dtr = dtr_scores[0]
+                        else:
+                            local_dtr = dtr_calc.calculate_local_dtr(
+                                result["output_ids"], w_start, w_end, **replay_args
+                            )
+                    else:
+                        dtr_scores, _ = dtr_calc.calculate(result["output_ids"], **replay_args)
+                        local_dtr = dtr_scores[0]
+                    mode_local_dtrs.append(local_dtr)
+                except Exception as e:
+                    print(f"    ⚠️ DTR error: {e}")
+                    mode_local_dtrs.append(float("nan"))
+            else:
+                mode_local_dtrs.append(float("nan"))
 
             # Save first trajectory
             if i == 0:
@@ -468,7 +502,10 @@ def run_full_experiment(
         avg_rep = np.mean(mode_repetitions) if mode_repetitions else 0
         avg_ppl = np.nanmean(mode_ppls) if mode_ppls else float("nan")
         avg_tokens = mode_tokens_total // max(mode_total, 1)
-        avg_dtr = np.mean(mode_local_dtrs) if mode_local_dtrs else 0
+        # Use nanmean to safely handle failures without crashing
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            avg_dtr = float(np.nanmean(mode_local_dtrs)) if mode_local_dtrs else float("nan")
 
         mode_result = {
             "accuracy": accuracy,
@@ -552,6 +589,10 @@ def main():
         default=None,
         help="Experiment modes to run (default: all).",
     )
+    parser.add_argument(
+        "--no_calc_dtr", action="store_true",
+        help="Disable deep-thinking ratio (DTR) calculation to save time and VRAM",
+    )
     args = parser.parse_args()
 
     # ---- Determine dataset ----
@@ -607,10 +648,12 @@ def main():
     # ---- Run experiments ----
     modes = args.modes if args.modes else None
     experiment_results = run_full_experiment(
-        model, tokenizer, control_vector, dtr_calc,
+        model, tokenizer,
         dataset=dataset,
         dataset_name=dataset_name,
         modes=modes,
+        control_vector=control_vector,
+        calc_dtr=not args.no_calc_dtr,
     )
 
     # ---- Save results ----

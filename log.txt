@@ -1,0 +1,6 @@
+问题：Dynamic Spherical组的DTR有NaN这个值，找程序的bug
+找Baseline和DS组的行为哪里不同->DS组在反复确认
+注意到M算法根本没放出代码，因此需要验证是否有效
+去确认Spherical算法的代码以及是否有效
+
+我发现2k肯定是不够的，太短了
