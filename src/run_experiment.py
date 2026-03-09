@@ -351,7 +351,7 @@ def run_full_experiment(
     experiment_results = {}
 
     # Initialize DTR calculator once for all modes
-    dtr_calc = DTRCalculator(model, tokenizer, LAYER_ID)
+    dtr_calc = DTRCalculator(model)
 
     for mode in modes:
         print(f"\n{'='*60}")

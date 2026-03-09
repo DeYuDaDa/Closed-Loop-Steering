@@ -90,6 +90,7 @@ def create_steering_hook(
     control_vector: torch.Tensor,
     mode: str = "Dynamic_Spherical",
     continuous_alpha: float = 0.15,
+    capture_hidden_states: bool = False,
 ):
     """
     Factory function that creates a forward hook for spherical steering.
@@ -114,7 +115,8 @@ def create_steering_hook(
         seq_len = hidden.shape[1]
 
         # Record the last token's hidden state for analysis
-        history_hidden.append(hidden[:, -1, :].detach().cpu())
+        if capture_hidden_states:
+            history_hidden.append(hidden[:, -1, :].detach().cpu())
 
         # Only intervene during autoregressive decoding (seq_len == 1),
         # never during the prefill phase (seq_len > 1)
