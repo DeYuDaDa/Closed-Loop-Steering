@@ -372,7 +372,6 @@ def run_full_experiment(
     modes: list[str] | None = None,
     control_vector: torch.Tensor | None = None,
     batch_size: int = BATCH_SIZE,
-    calc_dtr: bool = True,
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -384,12 +383,10 @@ def run_full_experiment(
         model: Loaded causal LM.
         tokenizer: Tokenizer.
         control_vector: Steering vector (or None).
-        dtr_calc: DTR calculator instance.
         dataset: List of AIME problem dicts.
         dataset_name: Human-readable label for the dataset.
         modes: Experiment modes to run (defaults to config).
         batch_size: Number of sequences per batch for batched modes.
-        calc_dtr: Whether DTR will be calculated.
 
     Returns:
         experiment_results dict with per-mode metrics and per-problem details.
@@ -398,9 +395,6 @@ def run_full_experiment(
         modes = EXPERIMENT_MODES
 
     experiment_results = {}
-
-    # Initialize DTR calculator once for all modes
-    dtr_calc = DTRCalculator(model)
 
     for mode in modes:
         print(f"\n{'='*60}")
@@ -507,84 +501,21 @@ def run_full_experiment(
 
             per_problem_details.append(detail)
 
-        # ---- Deferred DTR & PPL Calculation ----
-        # Run ALL heavy forward passes AFTER generation is complete,
-        # so GPU stays at full utilization during the generation phase.
-        if calc_dtr:
-            print(f"\n  📐 [{mode}] Calculating DTR (deferred, {len(results_list)} problems)...")
-        for i, result in enumerate(results_list):
-            # DTR
-            if calc_dtr:
-                try:
-                    # Reconstruct output_ids as a GPU tensor from the plain Python list
-                    output_ids_gpu = torch.tensor(
-                        [result["output_ids"]], dtype=torch.long, device=model.device
-                    )  # shape [1, seq_len]
-
-                    # Construct replay trajectory
-                    alpha_traj = None
-                    if mode == "Continuous":
-                        alpha_traj = [0.15] * (output_ids_gpu.shape[1] - result["input_len"])
-                    elif mode == "Dynamic_Spherical":
-                        alpha_traj = result["alpha_trajectory"]
-
-                    replay_args = {
-                        "control_vector": control_vector if mode in ("Continuous", "Dynamic_Spherical") else None,
-                        "alpha_trajectory": alpha_traj,
-                        "input_len": result["input_len"],
-                        "layer_id": LAYER_ID
-                    }
-
-                    if result["intervention_start"] and result["intervention_end"]:
-                        w_start = result["input_len"] + result["intervention_start"]
-                        w_end = result["input_len"] + result["intervention_end"]
-                        if w_start >= w_end:
-                            dtr_scores, _ = dtr_calc.calculate(output_ids_gpu, **replay_args)
-                            local_dtr = dtr_scores[0]
-                        else:
-                            local_dtr = dtr_calc.calculate_local_dtr(
-                                output_ids_gpu, w_start, w_end, **replay_args
-                            )
-                    else:
-                        dtr_scores, _ = dtr_calc.calculate(output_ids_gpu, **replay_args)
-                        local_dtr = dtr_scores[0]
-                    mode_local_dtrs.append(local_dtr)
-                    print(f"    DTR[{i+1}/{len(results_list)}] = {local_dtr:.4f}")
-
-                    del output_ids_gpu
-                    torch.cuda.synchronize()
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                except Exception as e:
-                    print(f"    ⚠️ DTR error [{i+1}]: {e}")
-                    mode_local_dtrs.append(float("nan"))
-            else:
-                mode_local_dtrs.append(float("nan"))
-
-            # PPL (also deferred)
-            try:
-                ppl = calculate_ppl(model, tokenizer, result["text"])
-                mode_ppls[i] = ppl
-            except Exception:
-                pass  # already nan
+            per_problem_details.append(detail)
 
         # ---- Aggregate mode results ----
         accuracy = mode_correct / mode_total if mode_total > 0 else 0
         avg_rep = np.mean(mode_repetitions) if mode_repetitions else 0
-        avg_ppl = np.nanmean(mode_ppls) if mode_ppls else float("nan")
         avg_tokens = mode_tokens_total // max(mode_total, 1)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            avg_dtr = float(np.nanmean(mode_local_dtrs)) if mode_local_dtrs else float("nan")
 
         mode_result = {
             "accuracy": accuracy,
             "correct_count": mode_correct,
             "total_count": mode_total,
             "repetition": avg_rep,
-            "ppl": avg_ppl,
+            "ppl": float("nan"), # Will be calculated offline
             "tokens": avg_tokens,
-            "local_dtr": avg_dtr,
+            "local_dtr": float("nan"), # Will be calculated offline
             "teca_trajectory": first_teca_traj,
             "alpha_trajectory": first_alpha_traj,
             "per_problem": per_problem_details,
@@ -658,10 +589,6 @@ def main():
         nargs="+",
         default=None,
         help="Experiment modes to run (default: all).",
-    )
-    parser.add_argument(
-        "--no_calc_dtr", action="store_true",
-        help="Disable deep-thinking ratio (DTR) calculation to save time and VRAM",
     )
     args = parser.parse_args()
 
