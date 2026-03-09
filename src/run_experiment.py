@@ -31,6 +31,17 @@ import json
 import warnings
 from datetime import datetime
 import argparse
+
+# ---- CUDA Allocator Anti-Fragmentation ----
+# Must be set BEFORE importing torch. Expandable segments prevent the
+# caching allocator from creating permanent fragmentation holes when
+# tensors of varying sizes (KV caches, hidden states) are allocated
+# and freed in a loop.
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "expandable_segments:True,garbage_collection_threshold:0.7"
+)
+
 import torch
 import numpy as np
 from transformers import (
@@ -182,8 +193,9 @@ def run_single_generation(
         tokenizer.decode([t]).replace("\n", "↵") for t in generated_ids[0]
     ]
 
-    # Move output_ids to CPU immediately to free GPU VRAM
-    output_ids_cpu = output_ids.cpu()
+    # Move output_ids to plain Python to sever ALL PyTorch/CUDA references.
+    # Using .tolist() instead of .cpu() ensures zero hidden CUDA event refs.
+    output_ids_list = output_ids[0].cpu().tolist()  # list[int]
     # Explicitly break reference cycles to allow PyTorch to free the computation graph
     teca_traj = list(state.teca_trajectory)
     alpha_traj = list(state.alpha_trajectory)
@@ -193,24 +205,29 @@ def run_single_generation(
     conv = state.converged
     
     del output_ids
+    del generated_ids
     del inputs
     del state
     del monitor
     del processors
     del pid
     del hook_fn
+    del history_hidden
+    # Synchronize CUDA stream before freeing — ensures all async ops are done
+    torch.cuda.synchronize()
+    gc.collect()
     torch.cuda.empty_cache()
 
     return {
         "text": gen_text,
         "tokens": tokens,
         "num_tokens": len(tokens),
-        "output_ids": output_ids_cpu,
+        "output_ids": output_ids_list,  # plain Python list[int], no PyTorch refs
         "input_len": input_len,
         "teca_trajectory": teca_traj,
         "alpha_trajectory": alpha_traj,
         "entropy_trajectory": entropy_traj,
-        "history_hidden": [],  # Don't keep history_hidden to save RAM
+        "history_hidden": [],
         "intervention_start": inv_start,
         "intervention_end": inv_end,
         "convergence": conv,
@@ -317,11 +334,12 @@ def run_batched_generation(
                 for t in generated_ids
             ]
 
+            # Convert to plain Python list to sever CUDA references
             all_results.append({
                 "text": gen_text,
                 "tokens": tokens,
                 "num_tokens": len(tokens),
-                "output_ids": output_ids[i:i+1].cpu(),  # Move to CPU immediately
+                "output_ids": output_ids[i].cpu().tolist(),  # plain list[int]
                 "input_len": input_len,
                 "teca_trajectory": [],
                 "alpha_trajectory": [],
@@ -336,6 +354,9 @@ def run_batched_generation(
         del inputs
         del state
         del hook_fn
+        del history_hidden
+        torch.cuda.synchronize()
+        gc.collect()
         torch.cuda.empty_cache()
 
     return all_results
@@ -408,8 +429,9 @@ def run_full_experiment(
                 )
                 results_list.append(result)
                 # Aggressive memory cleanup between sequential problems
-                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
                 gc.collect()
+                torch.cuda.empty_cache()
 
         # ---- Evaluate each problem ----
         mode_correct = 0
@@ -494,8 +516,10 @@ def run_full_experiment(
             # DTR
             if calc_dtr:
                 try:
-                    # Move output_ids to GPU for DTR calculation
-                    output_ids_gpu = result["output_ids"].to(model.device)
+                    # Reconstruct output_ids as a GPU tensor from the plain Python list
+                    output_ids_gpu = torch.tensor(
+                        [result["output_ids"]], dtype=torch.long, device=model.device
+                    )  # shape [1, seq_len]
 
                     # Construct replay trajectory
                     alpha_traj = None
@@ -528,8 +552,9 @@ def run_full_experiment(
                     print(f"    DTR[{i+1}/{len(results_list)}] = {local_dtr:.4f}")
 
                     del output_ids_gpu
-                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
                     gc.collect()
+                    torch.cuda.empty_cache()
                 except Exception as e:
                     print(f"    ⚠️ DTR error [{i+1}]: {e}")
                     mode_local_dtrs.append(float("nan"))
