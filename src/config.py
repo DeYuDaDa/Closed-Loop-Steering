@@ -9,7 +9,7 @@ MODEL_PATH = "/root/autodl-tmp/qwen3-8b"
 LAYER_ID = 24  # Target transformer layer for hook injection
 
 # ======================== TECA (State Monitor) ========================
-TECA_THRESHOLD = 0.25          # SetPoint: TECA above this triggers intervention
+TECA_THRESHOLD = 0.15          # SetPoint: TECA above this triggers intervention
 TECA_TEMPERATURE = 1.0        # Softmax temperature for entropy calculation
 TECA_EPSILON = 1e-9           # Numerical stability for log
 
