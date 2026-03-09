@@ -184,7 +184,22 @@ def run_single_generation(
 
     # Move output_ids to CPU immediately to free GPU VRAM
     output_ids_cpu = output_ids.cpu()
+    # Explicitly break reference cycles to allow PyTorch to free the computation graph
+    teca_traj = list(state.teca_trajectory)
+    alpha_traj = list(state.alpha_trajectory)
+    entropy_traj = list(state.entropy_trajectory)
+    inv_start = state.intervention_start_step
+    inv_end = state.intervention_end_step
+    conv = state.converged
+    
     del output_ids
+    del inputs
+    del state
+    del monitor
+    del processors
+    del pid
+    del hook_fn
+    torch.cuda.empty_cache()
 
     return {
         "text": gen_text,
@@ -192,13 +207,13 @@ def run_single_generation(
         "num_tokens": len(tokens),
         "output_ids": output_ids_cpu,
         "input_len": input_len,
-        "teca_trajectory": state.teca_trajectory,
-        "alpha_trajectory": state.alpha_trajectory,
-        "entropy_trajectory": state.entropy_trajectory,
+        "teca_trajectory": teca_traj,
+        "alpha_trajectory": alpha_traj,
+        "entropy_trajectory": entropy_traj,
         "history_hidden": [],  # Don't keep history_hidden to save RAM
-        "intervention_start": state.intervention_start_step,
-        "intervention_end": state.intervention_end_step,
-        "convergence": state.converged,
+        "intervention_start": inv_start,
+        "intervention_end": inv_end,
+        "convergence": conv,
     }
 
 
@@ -318,6 +333,9 @@ def run_batched_generation(
 
         # Free GPU memory after extracting results from this batch
         del output_ids
+        del inputs
+        del state
+        del hook_fn
         torch.cuda.empty_cache()
 
     return all_results

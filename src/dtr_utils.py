@@ -196,7 +196,19 @@ class DTRCalculator:
         is_deep_thinking = c_t >= self.deep_thinking_threshold
         dtr_scores = is_deep_thinking.float().mean(dim=-1)
 
-        return dtr_scores.cpu().tolist(), c_t.cpu()
+        result_scores = dtr_scores.cpu().tolist()
+        result_ct = c_t.cpu()
+
+        # Aggressively release the massive CPU list of 32 layer tensors (1GB+)
+        del hidden_states_cpu
+        del is_deep_thinking
+        del dtr_scores
+        del c_t
+        del min_jsd_so_far
+        import gc
+        gc.collect()
+
+        return result_scores, result_ct
 
     @torch.no_grad()
     def calculate_local_dtr(
