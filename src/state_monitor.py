@@ -26,35 +26,42 @@ class InjectionState:
     """
     Shared mutable state object passed between LogitsProcessor and Forward Hook.
     Acts as the communication bus for the closed-loop system.
+    Handles batched computation.
     """
 
-    def __init__(self):
+    def __init__(self, batch_size: int, device: str = "cuda"):
+        self.batch_size = batch_size
+        self.device = device
         self.reset()
 
     def reset(self):
-        # --- TECA state ---
-        self.entropy_sum: float = 0.0
-        self.step_count: int = 0
-        self.teca: float = 0.0
+        # --- TECA state (Batched) ---
+        self.entropy_sum: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
+        self.step_count: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
+        self.teca: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
 
-        # --- ThinkBrake state ---
-        self.margin: float = float("inf")
+        # --- ThinkBrake state (Batched) ---
+        self.margin: torch.Tensor = torch.full((self.batch_size,), float("inf"), device=self.device)
 
         # --- PID output (written by PIDController, read by Hook) ---
-        self.alpha: float = 0.0
+        self.alpha: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
 
-        # --- Trajectory logging (for visualization) ---
-        self.teca_trajectory: list[float] = []
-        self.alpha_trajectory: list[float] = []
-        self.entropy_trajectory: list[float] = []
+        # --- Trajectory logging (Batched) ---
+        # List of lists, outer list is per-sequence in the batch
+        self.teca_trajectory: list[list[float]] = [[] for _ in range(self.batch_size)]
+        self.alpha_trajectory: list[list[float]] = [[] for _ in range(self.batch_size)]
+        self.entropy_trajectory: list[list[float]] = [[] for _ in range(self.batch_size)]
 
-        # --- Flags ---
-        self.intervention_active: bool = False
-        self.converged: bool = False
+        # --- Flags (Batched) ---
+        self.intervention_active: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        self.converged: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        
+        # Track whether a sequence is still generating (True) or has hit EOS (False)
+        self.active_mask: torch.Tensor = torch.ones(self.batch_size, dtype=torch.bool, device=self.device)
 
-        # --- Intervention window tracking ---
-        self.intervention_start_step: int | None = None
-        self.intervention_end_step: int | None = None
+        # --- Intervention window tracking (Batched) ---
+        self.intervention_start_step: list[int | None] = [None] * self.batch_size
+        self.intervention_end_step: list[int | None] = [None] * self.batch_size
 
 
 class StateMonitor(LogitsProcessor):
@@ -97,56 +104,104 @@ class StateMonitor(LogitsProcessor):
         Called at every generation step by HuggingFace generate().
         `scores` is the raw logits tensor of shape [batch, vocab_size].
         """
-        # --- 1. Compute current token entropy H_t ---
+        batch_size = scores.shape[0]
+
+        # Safety check: if batch size changed (e.g., due to dropping finished sequences in some frameworks),
+        # but HuggingFace `generate` with `padding` keeps batch size constant, we rely on padding tokens.
+        # We assume batch size remains constant as initialized in InjectionState.
+        
+        # --- 1. Compute current token entropy H_t for the whole batch ---
         # Apply temperature scaling and softmax
         probs = F.softmax(scores / self.temperature, dim=-1)  # [batch, V]
         # Shannon entropy: H = -sum(p * log(p))
         log_probs = torch.log(probs + self.epsilon)
         H_t = -torch.sum(probs * log_probs, dim=-1)  # [batch]
-        H_t_val = H_t[0].item()  # Take first batch element
 
-        # --- 2. Update TECA (cumulative average entropy) ---
-        self.state.step_count += 1
-        self.state.entropy_sum += H_t_val
-        self.state.teca = self.state.entropy_sum / self.state.step_count
+        # Determine which sequences just generated EOS token
+        # input_ids shape is [batch, current_length]
+        # In HF generate, if a sequence hits EOS, it typically pads further generations.
+        # We can dynamically detect termination if term_token_id is emitted, or rely on active_mask
+        # being updated externally by run_experiment if needed. But HF generate doesn't tell LogitsProcessor
+        # directly if a sequence finished. 
+        # A simple heuristic: if a sequence is already converged or we see pad tokens, we could mask. 
+        # For our purposes, we'll keep updating state for all sequences that are still active.
+        
+        # Update step_count only for active sequences
+        self.state.step_count = self.state.step_count + self.state.active_mask.to(torch.float32)
 
-        # Log trajectories
-        self.state.entropy_trajectory.append(H_t_val)
-        self.state.teca_trajectory.append(self.state.teca)
+        # Ensure we don't divide by zero
+        safe_steps = torch.clamp(self.state.step_count, min=1.0)
 
-        # --- 3. Compute ThinkBrake Margin M_t (if term token is set) ---
+        # Update entropy_sum only for active sequences
+        self.state.entropy_sum = torch.where(
+            self.state.active_mask,
+            self.state.entropy_sum + H_t,
+            self.state.entropy_sum
+        )
+
+        # Compute TECA
+        self.state.teca = self.state.entropy_sum / safe_steps
+
+        # --- 2. Compute ThinkBrake Margin M_t (if term token is set) ---
         if self.term_token_id is not None:
             log_probs_full = F.log_softmax(scores, dim=-1)  # [batch, V]
-            max_log_prob = log_probs_full[0].max().item()
-            term_log_prob = log_probs_full[0, self.term_token_id].item()
-            self.state.margin = max_log_prob - term_log_prob
+            # max_log_prob shape: [batch]
+            max_log_prob, _ = log_probs_full.max(dim=-1)
+            # term_log_prob shape: [batch]
+            term_log_prob = log_probs_full[:, self.term_token_id]
+            
+            current_margin = max_log_prob - term_log_prob
+            
+            # Update margin where active
+            self.state.margin = torch.where(
+                self.state.active_mask,
+                current_margin,
+                self.state.margin
+            )
 
             # Check convergence
-            if self.state.margin <= self.margin_tau:
-                self.state.converged = True
+            newly_converged = (self.state.margin <= self.margin_tau) & self.state.active_mask
+            self.state.converged = self.state.converged | newly_converged
 
-        # --- 4. Drive PID controller if TECA breaches threshold ---
+        # --- 3. Drive PID controller if TECA breaches threshold ---
         if self.pid is not None:
-            alpha = self.pid.step(self.state.teca)
+            # PID controller step now returns a tensor of alphas [batch]
+            alpha = self.pid.step(self.state.teca, self.state.active_mask)
             self.state.alpha = alpha
 
-            # Track intervention window:
-            # - Record start only on the FIRST time alpha > 0
-            # - Record/update end whenever alpha = 0 (or at the end of generation)
-            if alpha > 0:
-                if not self.state.intervention_active:
-                    self.state.intervention_active = True
-                    self.state.intervention_start_step = self.state.step_count
-                # If active, keep updating the "latest" known end step to the current step
-                # so that if generation stops while intervening, we have a valid end.
-                self.state.intervention_end_step = self.state.step_count
-            else:
-                if self.state.intervention_active:
-                    self.state.intervention_active = False
-                    self.state.intervention_end_step = self.state.step_count
+            # Track intervention window (Vectorized):
+            # Start: alpha > 0 and not previously active
+            just_started = (alpha > 0) & (~self.state.intervention_active) & self.state.active_mask
+            self.state.intervention_active = self.state.intervention_active | just_started
+            
+            # End: alpha == 0 and was previously active
+            just_ended = (alpha <= 0) & self.state.intervention_active & self.state.active_mask
+            self.state.intervention_active = self.state.intervention_active & (~just_ended)
 
-        # Log alpha trajectory
-        self.state.alpha_trajectory.append(self.state.alpha)
+            # Record step counts into lists
+            step_counts_list = self.state.step_count.to(torch.int32).tolist()
+            for i in range(batch_size):
+                if just_started[i].item():
+                    self.state.intervention_start_step[i] = step_counts_list[i]
+                
+                # If intervention is currently active, continuously update the end step
+                # so if it cuts off, we have the latest step
+                if self.state.intervention_active[i].item():
+                    self.state.intervention_end_step[i] = step_counts_list[i]
+                elif just_ended[i].item():
+                    self.state.intervention_end_step[i] = step_counts_list[i]
+
+        # --- 4. Log trajectories ---
+        H_t_list = H_t.tolist()
+        teca_list = self.state.teca.tolist()
+        alpha_list = self.state.alpha.tolist()
+        active_list = self.state.active_mask.tolist()
+
+        for i in range(batch_size):
+            if active_list[i]:
+                self.state.entropy_trajectory[i].append(H_t_list[i])
+                self.state.teca_trajectory[i].append(teca_list[i])
+                self.state.alpha_trajectory[i].append(alpha_list[i])
 
         # Scores pass through unmodified — we only observe, never mutate logits
         return scores

@@ -108,130 +108,8 @@ def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | N
     return None
 
 
-# ======================== Single-Sequence Generation ========================
-# Used for Dynamic_Spherical mode (per-sequence PID state)
-
-def run_single_generation(
-    model,
-    tokenizer,
-    prompt: str,
-    mode: str,
-    control_vector: torch.Tensor | None,
-    calc_dtr: bool = True, # New argument
-) -> dict:
-    """
-    Run generation for a single prompt under a given experiment mode.
-
-    Returns a dict with:
-        text, tokens, teca_trajectory, alpha_trajectory,
-        history_hidden, intervention_start, intervention_end
-    """
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    input_len = inputs.input_ids.shape[1]
-
-    # ---- Set up the closed-loop pipeline ----
-    state = InjectionState()
-
-    # PID controller (only for Dynamic_Spherical)
-    pid = PIDController() if mode == "Dynamic_Spherical" else None
-
-    # Resolve </think> token ID for ThinkBrake
-    term_token_id = None
-    try:
-        term_ids = tokenizer.encode("</think>", add_special_tokens=False)
-        if term_ids:
-            term_token_id = term_ids[-1]
-    except Exception:
-        pass
-
-    # State monitor (LogitsProcessor)
-    monitor = StateMonitor(
-        state=state,
-        pid_controller=pid,
-        term_token_id=term_token_id,
-    )
-    processors = LogitsProcessorList([monitor])
-
-    # Steering hook
-    if control_vector is not None:
-        hook_fn, history_hidden = create_steering_hook(
-            state=state,
-            control_vector=control_vector,
-            mode=mode,
-            continuous_alpha=0.15,
-            capture_hidden_states=calc_dtr, # Only capture if DTR is calculated
-        )
-    else:
-        # Fallback: no-op hook (avoid storing huge history_hidden arrays to save RAM)
-        history_hidden = []
-
-        def hook_fn(module, args, output):
-            return output
-
-    # Register hook at target layer
-    layer = model.model.layers[LAYER_ID]
-    handle = layer.register_forward_hook(hook_fn)
-
-    # ---- Generate ----
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=AIME_MAX_TOKENS,
-            do_sample=True,
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            pad_token_id=tokenizer.eos_token_id,
-            logits_processor=processors,
-        )
-
-    handle.remove()
-
-    # ---- Extract results ----
-    generated_ids = output_ids[:, input_len:]
-    gen_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-    tokens = [
-        tokenizer.decode([t]).replace("\n", "↵") for t in generated_ids[0]
-    ]
-
-    # Move output_ids to plain Python to sever ALL PyTorch/CUDA references.
-    # Using .tolist() instead of .cpu() ensures zero hidden CUDA event refs.
-    output_ids_list = output_ids[0].cpu().tolist()  # list[int]
-    # Explicitly break reference cycles to allow PyTorch to free the computation graph
-    teca_traj = list(state.teca_trajectory)
-    alpha_traj = list(state.alpha_trajectory)
-    entropy_traj = list(state.entropy_trajectory)
-    inv_start = state.intervention_start_step
-    inv_end = state.intervention_end_step
-    conv = state.converged
-    
-    del output_ids
-    del generated_ids
-    del inputs
-    del state
-    del monitor
-    del processors
-    del pid
-    del hook_fn
-    del history_hidden
-    # Synchronize CUDA stream before freeing — ensures all async ops are done
-    torch.cuda.synchronize()
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    return {
-        "text": gen_text,
-        "tokens": tokens,
-        "num_tokens": len(tokens),
-        "output_ids": output_ids_list,  # plain Python list[int], no PyTorch refs
-        "input_len": input_len,
-        "teca_trajectory": teca_traj,
-        "alpha_trajectory": alpha_traj,
-        "entropy_trajectory": entropy_traj,
-        "history_hidden": [],
-        "intervention_start": inv_start,
-        "intervention_end": inv_end,
-        "convergence": conv,
-    }
+# Single sequence generation used to be here, but has been removed
+# because all modes (including Dynamic_Spherical) now use fully batched tensor math.
 
 
 # ======================== Batched Generation ========================
@@ -244,63 +122,103 @@ def run_batched_generation(
     mode: str,
     control_vector: torch.Tensor | None,
     batch_size: int = BATCH_SIZE,
-    calc_dtr: bool = True, # New argument
 ) -> list[dict]:
     """
-    Run batched generation for Baseline or Continuous modes.
-
-    These modes use uniform intervention (none or fixed-alpha), so
-    batch processing is safe.
+    Run batched generation for ALL modes.
+    
+    Batched state handling and tensor operations natively support Dynamic_Spherical
+    speedup without cross-sequence pollution.
 
     Args:
         model: The loaded causal LM.
         tokenizer: The tokenizer.
         prompts: List of prompt strings.
-        mode: "Baseline" or "Continuous".
+        mode: "Baseline", "Continuous", or "Dynamic_Spherical".
         control_vector: The steering vector (or None).
         batch_size: Number of sequences per batch.
-        calc_dtr: Whether DTR will be calculated, influences history_hidden capture.
 
     Returns:
-        List of result dicts (same format as run_single_generation).
+        List of result dicts.
     """
     all_results = []
+    
+    # Resolve </think> token ID for ThinkBrake
+    term_token_id = None
+    try:
+        term_ids = tokenizer.encode("</think>", add_special_tokens=False)
+        if term_ids:
+            term_token_id = term_ids[-1]
+    except Exception:
+        pass
 
     for batch_start in range(0, len(prompts), batch_size):
         batch_prompts = prompts[batch_start:batch_start + batch_size]
         actual_bs = len(batch_prompts)
 
-        # Tokenize with padding
+        # Tokenize with left-padding to keep alignments simple
+        tokenizer.padding_side = 'left'
         inputs = tokenizer(
             batch_prompts,
             return_tensors="pt",
             padding=True,
             truncation=True,
         ).to(model.device)
+        
+        # Reset to right padding just in case it's assumed elsewhere
+        tokenizer.padding_side = 'right'
 
-        # For batched mode, we use a simple shared state (Baseline/Continuous only)
-        state = InjectionState()
+        # Initialize batched state
+        state = InjectionState(batch_size=actual_bs, device=model.device)
+        pid = None
+        processors = LogitsProcessorList()
+        
         if mode == "Continuous":
-            state.intervention_active = True
-            state.alpha = 0.15  # Fixed continuous alpha
+            state.intervention_active.fill_(True)
+            state.alpha.fill_(0.15)  # Fixed continuous alpha
+        elif mode in ("Dynamic_Spherical",):
+            # PID controller mapped to batch size
+            pid = PIDController(batch_size=actual_bs, device=model.device)
+            
+        if mode != "Baseline":
+            monitor = StateMonitor(
+                state=state,
+                pid_controller=pid,
+                term_token_id=term_token_id,
+            )
+            
+            # Since generation doesn't expose sequence completion easily, we add a
+            # quick custom logits processor that examines input_ids to update the active_mask
+            class ActiveMaskProcessor:
+                def __init__(self, state, tokenizer):
+                    self.state = state
+                    self.eos_id = tokenizer.eos_token_id
+                    
+                def __call__(self, input_ids, scores):
+                    # Check if the last generated token is EOS 
+                    # Once a sequence hits EOS, HF generate will keep passing it.
+                    if self.eos_id is not None:
+                        # input_ids is a tensor: [batch_size, current_seq_len]
+                        has_eos = (input_ids == self.eos_id).any(dim=1)
+                        self.state.active_mask = ~has_eos
+                    return scores
+            
+            processors.append(ActiveMaskProcessor(state, tokenizer))
+            processors.append(monitor)
 
-        # Steering hook (same alpha for all sequences in batch)
+        # Steering hook 
         history_hidden = []
-        if control_vector is not None and mode == "Continuous":
+        if control_vector is not None and mode in ("Continuous", "Dynamic_Spherical"):
             hook_fn, history_hidden = create_steering_hook(
                 state=state,
                 control_vector=control_vector,
                 mode=mode,
                 continuous_alpha=0.15,
-                capture_hidden_states=calc_dtr, # Only capture if DTR is calculated
+                capture_hidden_states=False, # We use offline DTR script now
             )
+            layer = model.model.layers[LAYER_ID]
+            handle = layer.register_forward_hook(hook_fn)
         else:
-            def hook_fn(module, args, output):
-                return output
-
-        # Register hook
-        layer = model.model.layers[LAYER_ID]
-        handle = layer.register_forward_hook(hook_fn)
+            handle = None
 
         # Generate
         with torch.no_grad():
@@ -311,9 +229,11 @@ def run_batched_generation(
                 temperature=TEMPERATURE,
                 top_p=TOP_P,
                 pad_token_id=tokenizer.eos_token_id,
+                logits_processor=processors,
             )
 
-        handle.remove()
+        if handle is not None:
+            handle.remove()
 
         # Extract per-sequence results
         for i in range(actual_bs):
@@ -334,6 +254,14 @@ def run_batched_generation(
                 for t in generated_ids
             ]
 
+            # Extract specific trajectories for this problem
+            teca_traj = state.teca_trajectory[i] if mode != "Baseline" else []
+            alpha_traj = state.alpha_trajectory[i] if mode != "Baseline" else []
+            entropy_traj = state.entropy_trajectory[i] if mode != "Baseline" else []
+            inv_start = state.intervention_start_step[i] if mode != "Baseline" else None
+            inv_end = state.intervention_end_step[i] if mode != "Baseline" else None
+            conv = state.converged[i].item() if mode != "Baseline" else False
+
             # Convert to plain Python list to sever CUDA references
             all_results.append({
                 "text": gen_text,
@@ -341,20 +269,25 @@ def run_batched_generation(
                 "num_tokens": len(tokens),
                 "output_ids": output_ids[i].cpu().tolist(),  # plain list[int]
                 "input_len": input_len,
-                "teca_trajectory": [],
-                "alpha_trajectory": [],
-                "entropy_trajectory": [],
+                "teca_trajectory": teca_traj,
+                "alpha_trajectory": alpha_traj,
+                "entropy_trajectory": entropy_traj,
                 "history_hidden": [],
-                "intervention_start": None,
-                "intervention_end": None,
+                "intervention_start": inv_start,
+                "intervention_end": inv_end,
+                "convergence": conv,
             })
 
         # Free GPU memory after extracting results from this batch
         del output_ids
         del inputs
         del state
-        del hook_fn
+        if pid is not None:
+            del pid
+        if handle is not None:
+            del hook_fn
         del history_hidden
+        del processors
         torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
@@ -405,27 +338,11 @@ def run_full_experiment(
         prompts = collate_prompts(dataset)
 
         # ---- Run generation ----
-        if mode in ("Baseline", "Continuous"):
-            print(f"  Using BATCHED generation (batch_size={batch_size})...")
-            results_list = run_batched_generation(
-                model, tokenizer, prompts, mode, control_vector,
-                batch_size=batch_size, calc_dtr=calc_dtr
-            )
-        else:
-            # Dynamic_Spherical: sequential
-            print(f"  Using SEQUENTIAL generation (per-sequence PID)...")
-            results_list = []
-            for idx, prompt in enumerate(prompts):
-                print(f"    [{mode}] Problem {idx+1}/{len(prompts)}: "
-                      f"id={dataset[idx]['id']}...")
-                result = run_single_generation(
-                    model, tokenizer, prompt, mode, control_vector, calc_dtr=calc_dtr
-                )
-                results_list.append(result)
-                # Aggressive memory cleanup between sequential problems
-                torch.cuda.synchronize()
-                gc.collect()
-                torch.cuda.empty_cache()
+        print(f"  Using BATCHED generation (batch_size={batch_size}) for ALL modes...")
+        results_list = run_batched_generation(
+            model, tokenizer, prompts, mode, control_vector,
+            batch_size=batch_size
+        )
 
         # ---- Evaluate each problem ----
         mode_correct = 0
@@ -487,19 +404,24 @@ def run_full_experiment(
                 detail["intervention_start"] = result["intervention_start"]
                 detail["intervention_end"] = result["intervention_end"]
                 detail["convergence"] = result.get("convergence", None)
-                detail["alpha_active_steps"] = sum(
-                    1 for a in alpha_traj if a > 0
-                )
-                detail["alpha_max_value"] = (
-                    max(alpha_traj) if alpha_traj else 0.0
-                )
-                detail["alpha_mean_value"] = (
-                    (sum(alpha_traj) / len(alpha_traj))
-                    if alpha_traj
-                    else 0.0
-                )
+                def _val(x):
+                    return x.item() if hasattr(x, "item") else x
 
-            per_problem_details.append(detail)
+                detail["alpha_active_steps"] = sum(
+                    1 for a in alpha_traj if _val(a) > 0
+                )
+                
+                # Handle max safely for empty lists or lists of tensors
+                max_val = 0.0
+                if alpha_traj:
+                    max_val = max(_val(a) for a in alpha_traj)
+                detail["alpha_max_value"] = max_val
+                
+                # Handle mean safely
+                mean_val = 0.0
+                if alpha_traj:
+                    mean_val = sum(_val(a) for a in alpha_traj) / len(alpha_traj)
+                detail["alpha_mean_value"] = mean_val
 
             per_problem_details.append(detail)
 
@@ -524,42 +446,46 @@ def run_full_experiment(
         # Module-level diagnostics summary (Dynamic_Spherical only)
         if mode == "Dynamic_Spherical":
             active_steps_list = [
-                d.get("alpha_active_steps", 0) for d in per_problem_details
+                d.get("alpha_active_steps", 0) for d in per_problem_details if isinstance(d, dict)
             ]
             total_steps_list = [
-                d.get("num_tokens", 1) for d in per_problem_details
+                d.get("num_tokens", 1) for d in per_problem_details if isinstance(d, dict)
             ]
             max_alpha_list = [
-                d.get("alpha_max_value", 0.0) for d in per_problem_details
+                d.get("alpha_max_value", 0.0) for d in per_problem_details if isinstance(d, dict)
             ]
             mode_result["module_diagnostics"] = {
                 "problems_with_intervention": sum(
-                    1 for s in active_steps_list if s > 0
+                    1 for s in active_steps_list if isinstance(s, (int, float)) and s > 0
                 ),
                 "problems_with_convergence": sum(
                     1 for d in per_problem_details
-                    if d.get("convergence")
+                    if isinstance(d, dict) and d.get("convergence", False)
                 ),
                 "mean_alpha_active_ratio": float(np.mean([
-                    a / max(t, 1)
+                    (a / max(t, 1)) if isinstance(a, int) and isinstance(t, int) else 0.0
                     for a, t in zip(active_steps_list, total_steps_list)
                 ])),
-                "mean_max_alpha": float(np.mean(max_alpha_list)),
+                "mean_max_alpha": float(np.mean(max_alpha_list) if isinstance(max_alpha_list, list) and len(max_alpha_list) > 0 else 0.0),
             }
             # Print diagnostic summary
             diag = mode_result["module_diagnostics"]
+            p_interv = diag.get("problems_with_intervention", 0)
+            a_ratio = diag.get("mean_alpha_active_ratio", 0.0)
+            m_alpha = diag.get("mean_max_alpha", 0.0)
+            p_conv = diag.get("problems_with_convergence", 0)
             print(f"\n  📊 [{mode}] MODULE DIAGNOSTICS:")
             print(f"    StateMonitor (TECA):     "
                   f"All {mode_total} problems have TECA trajectories")
             print(f"    PID Controller:          "
-                  f"{diag['problems_with_intervention']}/{mode_total} "
+                  f"{p_interv}/{mode_total} "
                   f"problems triggered intervention (α>0)")
             print(f"    Spherical Steering:      "
                   f"Mean active ratio = "
-                  f"{diag['mean_alpha_active_ratio']:.2%}, "
-                  f"Mean max α = {diag['mean_max_alpha']:.4f}")
+                  f"{a_ratio:.2%}, "
+                  f"Mean max α = {m_alpha:.4f}")
             print(f"    ThinkBrake Convergence:  "
-                  f"{diag['problems_with_convergence']}/{mode_total} "
+                  f"{p_conv}/{mode_total} "
                   f"problems reached convergence")
 
         experiment_results[mode] = mode_result
@@ -567,7 +493,7 @@ def run_full_experiment(
         print(f"\n  [{mode}] SUMMARY: "
               f"Pass@1={accuracy:.2%} ({mode_correct}/{mode_total}) | "
               f"AvgTokens={avg_tokens} | Rep={avg_rep:.3f} | "
-              f"PPL={avg_ppl:.2f} | DTR={avg_dtr:.3f}")
+              f"PPL=N/A | DTR=N/A")
 
     return experiment_results
 
@@ -639,9 +565,6 @@ def main():
         print("⚠️  No control vector loaded. "
               "Continuous and Dynamic modes will have no effect.")
 
-    # ---- DTR calculator ----
-    dtr_calc = DTRCalculator(model)
-
     # ---- Run experiments ----
     modes = args.modes if args.modes else None
     experiment_results = run_full_experiment(
@@ -650,7 +573,6 @@ def main():
         dataset_name=dataset_name,
         modes=modes,
         control_vector=control_vector,
-        calc_dtr=not args.no_calc_dtr,
     )
 
     # ---- Save results ----

@@ -14,7 +14,7 @@ import argparse
 import os
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from config import MODEL_PATH, RESULT_FILE, LAYER_ID, VECTOR_DIR
+from config import MODEL_PATH, LAYER_ID, VECTOR_DIR
 from dtr_utils import DTRCalculator, calculate_ppl
 from run_experiment import load_control_vector
 
@@ -44,7 +44,7 @@ def main():
     parser.add_argument(
         "--results",
         type=str,
-        default=RESULT_FILE,
+        required=True,
         help="Path to the JSON results file created by run_experiment.py",
     )
     args = parser.parse_args()

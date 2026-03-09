@@ -18,13 +18,14 @@ Mathematical formulation (Gram-Schmidt + rotation):
 """
 
 import torch
+import torch
 import math
 
 
 def spherical_rotate(
     h: torch.Tensor,
     v: torch.Tensor,
-    alpha: float,
+    alpha: torch.Tensor | float,
     eps: float = 1e-8,
 ) -> torch.Tensor:
     """
@@ -32,55 +33,60 @@ def spherical_rotate(
 
     This is a pure function with no side effects — suitable for use
     inside a forward hook.
+    Supports batched processing natively.
 
     Args:
-        h: Hidden state tensor, shape [..., d] (typically [batch, 1, dim]).
+        h: Hidden state tensor, shape [batch, 1, d].
         v: Normalized control vector, shape broadcastable to h.
-        alpha: Rotation angle in radians (from PID controller).
+        alpha: Rotation angle in radians, shape [batch] or float.
         eps: Small constant for numerical stability.
 
     Returns:
         h_new: Rotated hidden state with ||h_new|| == ||h||.
     """
-    if alpha <= 0:
-        return h  # No rotation needed
-
     # 1. Compute and save the original norm
-    h_norm = torch.norm(h, dim=-1, keepdim=True)  # [..., 1]
+    h_norm = torch.norm(h, dim=-1, keepdim=True)  # [batch, 1, 1]
 
     # 2. Get unit direction of h
-    h_hat = h / (h_norm + eps)  # [..., d]
+    h_hat = h / (h_norm + eps)  # [batch, 1, d]
 
     # 3. Gram-Schmidt: find component of v orthogonal to h_hat
-    # dot product: (v · ĥ) for each vector in the batch
-    v_dot_h = torch.sum(v * h_hat, dim=-1, keepdim=True)  # [..., 1]
-    u = v - v_dot_h * h_hat  # [..., d]
+    v_dot_h = torch.sum(v * h_hat, dim=-1, keepdim=True)  # [batch, 1, 1]
+    u = v - v_dot_h * h_hat  # [batch, 1, d]
 
     # 4. Normalize u to get orthonormal basis vector û
-    u_norm = torch.norm(u, dim=-1, keepdim=True)  # [..., 1]
-    u_hat = u / (u_norm + eps)  # [..., d]
+    u_norm = torch.norm(u, dim=-1, keepdim=True)  # [batch, 1, 1]
+    u_hat = u / (u_norm + eps)  # [batch, 1, d]
 
-    # 5. Handle degenerate case: if v is (anti-)parallel to h,
-    #    u_norm ≈ 0 and rotation is undefined → return h unchanged
-    is_degenerate = (u_norm.squeeze(-1) < eps)
-    if is_degenerate.any():
-        # For degenerate vectors, skip rotation (return original h)
-        # This is a batch-aware fallback
-        pass
+    # 5. Handle degenerate case
+    is_degenerate = (u_norm.squeeze(-1) < eps)  # [batch, 1]
 
     # 6. Rotate in the h-v plane
-    cos_a = math.cos(alpha)
-    sin_a = math.sin(alpha)
-    h_hat_rotated = cos_a * h_hat + sin_a * u_hat  # [..., d]
+    if isinstance(alpha, torch.Tensor):
+        # Reshape [batch] to [batch, 1, 1] for broadcasting
+        alpha_b = alpha.view(-1, 1, 1)
+        cos_a = torch.cos(alpha_b)
+        sin_a = torch.sin(alpha_b)
+    else:
+        # Scalar handling (e.g. Continuous mode fixed alpha)
+        cos_a = math.cos(alpha)
+        sin_a = math.sin(alpha)
+
+    h_hat_rotated = cos_a * h_hat + sin_a * u_hat  # [batch, 1, d]
 
     # 7. Restore original norm
-    h_new = h_norm * h_hat_rotated  # [..., d]
+    h_new = h_norm * h_hat_rotated  # [batch, 1, d]
 
     # 8. Handle degenerate cases by reverting to original h
     if is_degenerate.any():
-        # Expand mask to match hidden dim
         mask = is_degenerate.unsqueeze(-1).expand_as(h)
         h_new = torch.where(mask, h, h_new)
+
+    # Note: If alpha == 0, the equation cleanly yields:
+    # cos(0)*h_hat + sin(0)*u_hat = h_hat.
+    # h_norm * h_hat = h.
+    # So we don't strictly need a special mask for alpha == 0,
+    # though we could add one for micro-optimization of exact precision match.
 
     return h_new
 
@@ -137,7 +143,11 @@ def create_steering_hook(
         else:
             return output
 
-        if alpha <= 0:
+        # For scalar alpha (Continuous mode)
+        if isinstance(alpha, (float, int)) and alpha <= 0:
+            return output
+        # For tensor alpha (Dynamic_Spherical mode)
+        elif isinstance(alpha, torch.Tensor) and (alpha <= 0).all():
             return output
 
         # Align control vector to device/dtype of hidden state
