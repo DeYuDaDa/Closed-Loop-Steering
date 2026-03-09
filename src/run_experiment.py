@@ -24,6 +24,8 @@ Batch Processing Strategy:
 """
 
 import os
+import sys
+import gc
 import time
 import json
 import warnings
@@ -180,16 +182,20 @@ def run_single_generation(
         tokenizer.decode([t]).replace("\n", "↵") for t in generated_ids[0]
     ]
 
+    # Move output_ids to CPU immediately to free GPU VRAM
+    output_ids_cpu = output_ids.cpu()
+    del output_ids
+
     return {
         "text": gen_text,
         "tokens": tokens,
         "num_tokens": len(tokens),
-        "output_ids": output_ids,
+        "output_ids": output_ids_cpu,
         "input_len": input_len,
         "teca_trajectory": state.teca_trajectory,
         "alpha_trajectory": state.alpha_trajectory,
         "entropy_trajectory": state.entropy_trajectory,
-        "history_hidden": history_hidden,
+        "history_hidden": [],  # Don't keep history_hidden to save RAM
         "intervention_start": state.intervention_start_step,
         "intervention_end": state.intervention_end_step,
         "convergence": state.converged,
@@ -300,15 +306,19 @@ def run_batched_generation(
                 "text": gen_text,
                 "tokens": tokens,
                 "num_tokens": len(tokens),
-                "output_ids": output_ids[i:i+1],
+                "output_ids": output_ids[i:i+1].cpu(),  # Move to CPU immediately
                 "input_len": input_len,
                 "teca_trajectory": [],
                 "alpha_trajectory": [],
                 "entropy_trajectory": [],
-                "history_hidden": [], # history_hidden is not per-sequence in batched mode
+                "history_hidden": [],
                 "intervention_start": None,
                 "intervention_end": None,
             })
+
+        # Free GPU memory after extracting results from this batch
+        del output_ids
+        torch.cuda.empty_cache()
 
     return all_results
 
@@ -379,6 +389,9 @@ def run_full_experiment(
                     model, tokenizer, prompt, mode, control_vector, calc_dtr=calc_dtr
                 )
                 results_list.append(result)
+                # Aggressive memory cleanup between sequential problems
+                torch.cuda.empty_cache()
+                gc.collect()
 
         # ---- Evaluate each problem ----
         mode_correct = 0
@@ -406,57 +419,19 @@ def run_full_experiment(
             rep = calculate_repetition_rate(result["text"])
             mode_repetitions.append(rep)
 
-            # PPL
-            try:
-                ppl = calculate_ppl(model, tokenizer, result["text"])
-                mode_ppls.append(ppl)
-            except Exception:
-                mode_ppls.append(float("nan"))
-
-            # Local DTR
-            if calc_dtr:
-                try:
-                    # Construct replay trajectory
-                    alpha_traj = None
-                    if mode == "Continuous":
-                        # Continuous mode applies 0.15 to all generated tokens
-                        alpha_traj = [0.15] * (result["output_ids"].shape[1] - result["input_len"])
-                    elif mode == "Dynamic_Spherical":
-                        alpha_traj = result["alpha_trajectory"]
-                    
-                    # Replay args
-                    replay_args = {
-                        "control_vector": control_vector if mode in ("Continuous", "Dynamic_Spherical") else None,
-                        "alpha_trajectory": alpha_traj,
-                        "input_len": result["input_len"],
-                        "layer_id": LAYER_ID
-                    }
-
-                    if result["intervention_start"] and result["intervention_end"]:
-                        w_start = result["input_len"] + result["intervention_start"]
-                        w_end = result["input_len"] + result["intervention_end"]
-                        # Safety check: if start >= end, fallback to full DTR
-                        if w_start >= w_end:
-                            dtr_scores, _ = dtr_calc.calculate(result["output_ids"], **replay_args)
-                            local_dtr = dtr_scores[0]
-                        else:
-                            local_dtr = dtr_calc.calculate_local_dtr(
-                                result["output_ids"], w_start, w_end, **replay_args
-                            )
-                    else:
-                        dtr_scores, _ = dtr_calc.calculate(result["output_ids"], **replay_args)
-                        local_dtr = dtr_scores[0]
-                    mode_local_dtrs.append(local_dtr)
-                except Exception as e:
-                    print(f"    ⚠️ DTR error: {e}")
-                    mode_local_dtrs.append(float("nan"))
-            else:
-                mode_local_dtrs.append(float("nan"))
+            # PPL — skip during evaluation loop, will be calculated in deferred pass
+            # (to not interleave forward passes with generation)
+            mode_ppls.append(float("nan"))
 
             # Save first trajectory
             if i == 0:
                 first_teca_traj = result["teca_trajectory"]
                 first_alpha_traj = result["alpha_trajectory"]
+
+            status = "✅" if is_correct else "❌"
+            print(f"  {status} Problem {eval_item['id']}: "
+                  f"pred={predicted} expected={expected} | "
+                  f"Tokens={result['num_tokens']} | Rep={rep:.3f}")
 
             # Per-problem detail record
             detail = {
@@ -492,17 +467,69 @@ def run_full_experiment(
 
             per_problem_details.append(detail)
 
-            status = "✅" if is_correct else "❌"
-            print(f"  {status} Problem {eval_item['id']}: "
-                  f"pred={predicted} expected={expected} | "
-                  f"Tokens={result['num_tokens']} | Rep={rep:.3f}")
+        # ---- Deferred DTR & PPL Calculation ----
+        # Run ALL heavy forward passes AFTER generation is complete,
+        # so GPU stays at full utilization during the generation phase.
+        if calc_dtr:
+            print(f"\n  📐 [{mode}] Calculating DTR (deferred, {len(results_list)} problems)...")
+        for i, result in enumerate(results_list):
+            # DTR
+            if calc_dtr:
+                try:
+                    # Move output_ids to GPU for DTR calculation
+                    output_ids_gpu = result["output_ids"].to(model.device)
+
+                    # Construct replay trajectory
+                    alpha_traj = None
+                    if mode == "Continuous":
+                        alpha_traj = [0.15] * (output_ids_gpu.shape[1] - result["input_len"])
+                    elif mode == "Dynamic_Spherical":
+                        alpha_traj = result["alpha_trajectory"]
+
+                    replay_args = {
+                        "control_vector": control_vector if mode in ("Continuous", "Dynamic_Spherical") else None,
+                        "alpha_trajectory": alpha_traj,
+                        "input_len": result["input_len"],
+                        "layer_id": LAYER_ID
+                    }
+
+                    if result["intervention_start"] and result["intervention_end"]:
+                        w_start = result["input_len"] + result["intervention_start"]
+                        w_end = result["input_len"] + result["intervention_end"]
+                        if w_start >= w_end:
+                            dtr_scores, _ = dtr_calc.calculate(output_ids_gpu, **replay_args)
+                            local_dtr = dtr_scores[0]
+                        else:
+                            local_dtr = dtr_calc.calculate_local_dtr(
+                                output_ids_gpu, w_start, w_end, **replay_args
+                            )
+                    else:
+                        dtr_scores, _ = dtr_calc.calculate(output_ids_gpu, **replay_args)
+                        local_dtr = dtr_scores[0]
+                    mode_local_dtrs.append(local_dtr)
+                    print(f"    DTR[{i+1}/{len(results_list)}] = {local_dtr:.4f}")
+
+                    del output_ids_gpu
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                except Exception as e:
+                    print(f"    ⚠️ DTR error [{i+1}]: {e}")
+                    mode_local_dtrs.append(float("nan"))
+            else:
+                mode_local_dtrs.append(float("nan"))
+
+            # PPL (also deferred)
+            try:
+                ppl = calculate_ppl(model, tokenizer, result["text"])
+                mode_ppls[i] = ppl
+            except Exception:
+                pass  # already nan
 
         # ---- Aggregate mode results ----
         accuracy = mode_correct / mode_total if mode_total > 0 else 0
         avg_rep = np.mean(mode_repetitions) if mode_repetitions else 0
         avg_ppl = np.nanmean(mode_ppls) if mode_ppls else float("nan")
         avg_tokens = mode_tokens_total // max(mode_total, 1)
-        # Use nanmean to safely handle failures without crashing
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
             avg_dtr = float(np.nanmean(mode_local_dtrs)) if mode_local_dtrs else float("nan")
