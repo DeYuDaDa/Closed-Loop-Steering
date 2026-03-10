@@ -396,6 +396,8 @@ def run_full_experiment(
                 "num_tokens": result["num_tokens"],
                 "repetition": rep,
                 "full_response": result["text"],
+                "output_ids": result["output_ids"],
+                "input_len": result["input_len"],
             }
 
             # Module diagnostics (Dynamic_Spherical: per-problem trajectories)
