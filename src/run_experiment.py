@@ -179,6 +179,9 @@ def run_batched_generation(
             # PID controller mapped to batch size
             pid = PIDController(batch_size=actual_bs, device=model.device)
             
+        # Calculate actual input lengths per sequence in batch
+        input_lens = inputs.attention_mask.sum(dim=1).tolist()
+
         if mode != "Baseline":
             monitor = StateMonitor(
                 state=state,
@@ -189,20 +192,20 @@ def run_batched_generation(
             # Since generation doesn't expose sequence completion easily, we add a
             # quick custom logits processor that examines input_ids to update the active_mask
             class ActiveMaskProcessor:
-                def __init__(self, state, tokenizer):
+                def __init__(self, state, tokenizer, input_lens):
                     self.state = state
                     self.eos_id = tokenizer.eos_token_id
+                    self.input_lens = input_lens
                     
                 def __call__(self, input_ids, scores):
-                    # Check if the last generated token is EOS 
-                    # Once a sequence hits EOS, HF generate will keep passing it.
                     if self.eos_id is not None:
-                        # input_ids is a tensor: [batch_size, current_seq_len]
-                        has_eos = (input_ids == self.eos_id).any(dim=1)
-                        self.state.active_mask = ~has_eos
+                        for i in range(self.state.batch_size):
+                            gen_part = input_ids[i, self.input_lens[i]:]
+                            has_eos = (gen_part == self.eos_id).any()
+                            self.state.active_mask[i] = ~has_eos
                     return scores
             
-            processors.append(ActiveMaskProcessor(state, tokenizer))
+            processors.append(ActiveMaskProcessor(state, tokenizer, input_lens))
             processors.append(monitor)
 
         # Steering hook 
