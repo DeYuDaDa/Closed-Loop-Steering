@@ -89,8 +89,8 @@ class DTRCalculator:
             layer_id: The layer to attach the replay hook.
 
         Returns:
-            dtr_scores: List of DTR scores (float) per batch element.
-            c_t: Convergence depth matrix, shape [batch, seq_len].
+            dtr_scores: List of mean DTR scores (float) per batch element.
+            c_t_lists: List of sequence logic convergence depths per token (for generated part).
         """
         # --- Memory Offloading Strategy ---
         # Instead of output_hidden_states=True which keeps ALL 32 layers of 
@@ -159,56 +159,74 @@ class DTRCalculator:
         # (embeddings + L layers). We want layer 1 to L.
         # Move immediately to CPU to save VRAM
         hidden_states_cpu = [h.detach().cpu() for h in outputs.hidden_states[1:]] 
-        del outputs # Free the massive forward pass graph
+        # Fast release the massive forward pass graph
+        del outputs 
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
-        final_h = hidden_states_cpu[-1].to(self.model.device)
-        final_logits = self.model.lm_head(final_h)
-        p_t_L = F.softmax(final_logits, dim=-1)
-        del final_logits, final_h
+        batch_size, seq_len, dim = hidden_states_cpu[0].shape
+        device = self.model.device
         
-        batch_size, seq_len, _ = p_t_L.shape
-        device = p_t_L.device
+        # Only evaluate DTR on generated tokens!
+        # The prompt part is invariant and not part of the model's generation choices.
+        gen_len = seq_len - input_len
+        if gen_len <= 0:
+            return [0.0] * batch_size, [[] for _ in range(batch_size)]
+        
+        c_t_cpu = torch.full((batch_size, gen_len), self.L, dtype=torch.long, device="cpu")
 
-        min_jsd_so_far = torch.full((batch_size, seq_len), float("inf"), device=device)
-        c_t = torch.full((batch_size, seq_len), self.L, dtype=torch.long, device=device)
-
-        for l in range(self.L):
-            # Move only the current layer back to GPU
-            h_l = hidden_states_cpu[l].to(device)
-            logits_t_l = self.model.lm_head(h_l)
-            p_t_l = F.softmax(logits_t_l, dim=-1)
-            del logits_t_l, h_l  # Free intermediate GPU memory
-
-            jsd_l = self._compute_jsd_vectorized(p_t_L, p_t_l)
-            del p_t_l
+        # Invert the loop to process in sequence chunks!
+        # This prevents the LM head vocabulary matrix (V=152064) from blowing up VRAM.
+        chunk_size = 256
+        for start_idx in range(input_len, seq_len, chunk_size):
+            end_idx = min(start_idx + chunk_size, seq_len)
+            chunk_len = end_idx - start_idx
             
-            min_jsd_so_far = torch.minimum(min_jsd_so_far, jsd_l)
-
-            # JSD first drops below threshold
-            mask = (min_jsd_so_far <= self.threshold_g) & (c_t == self.L)
-            c_t[mask] = l + 1
+            # Get final layer for this chunk
+            final_h_chunk = hidden_states_cpu[-1][:, start_idx:end_idx, :].to(device)
+            final_logits = self.model.lm_head(final_h_chunk)
+            p_t_L_chunk = F.softmax(final_logits, dim=-1)
+            del final_logits, final_h_chunk
             
-        # Free final probability tensor
-        del p_t_L
-        torch.cuda.empty_cache()
+            min_jsd_chunk = torch.full((batch_size, chunk_len), float("inf"), device=device)
+            c_t_chunk = torch.full((batch_size, chunk_len), self.L, dtype=torch.long, device=device)
+            
+            for l in range(self.L):
+                # Move only the current layer back to GPU
+                h_l_chunk = hidden_states_cpu[l][:, start_idx:end_idx, :].to(device)
+                logits_l_chunk = self.model.lm_head(h_l_chunk)
+                p_t_l_chunk = F.softmax(logits_l_chunk, dim=-1)
+                del logits_l_chunk, h_l_chunk  # Free intermediate GPU memory
 
-        is_deep_thinking = c_t >= self.deep_thinking_threshold
-        dtr_scores = is_deep_thinking.float().mean(dim=-1)
+                jsd_l = self._compute_jsd_vectorized(p_t_L_chunk, p_t_l_chunk)
+                del p_t_l_chunk
+                
+                min_jsd_chunk = torch.minimum(min_jsd_chunk, jsd_l)
 
-        result_scores = dtr_scores.cpu().tolist()
-        result_ct = c_t.cpu()
+                # JSD first drops below threshold
+                mask = (min_jsd_chunk <= self.threshold_g) & (c_t_chunk == self.L)
+                c_t_chunk[mask] = l + 1
+            
+            # Store chunk back to CPU tensor
+            c_t_cpu[:, start_idx - input_len : end_idx - input_len] = c_t_chunk.cpu()
+            
+            del p_t_L_chunk, min_jsd_chunk, c_t_chunk
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+
+        is_deep_thinking = c_t_cpu >= self.deep_thinking_threshold
+        dtr_scores = is_deep_thinking.float().mean(dim=-1).tolist()
+        
+        c_t_lists = c_t_cpu.tolist()
 
         # Aggressively release the massive CPU list of 32 layer tensors (1GB+)
         del hidden_states_cpu
         del is_deep_thinking
-        del dtr_scores
-        del c_t
-        del min_jsd_so_far
+        del c_t_cpu
         import gc
         gc.collect()
 
-        return result_scores, result_ct
+        return dtr_scores, c_t_lists
 
     @torch.no_grad()
     def calculate_local_dtr(
@@ -236,17 +254,24 @@ class DTRCalculator:
         Returns:
             local_dtr: DTR score within the window (0.0 to 1.0).
         """
-        _, c_t = self.calculate(
+        _, c_t_lists = self.calculate(
             input_ids, 
             control_vector=control_vector, 
             alpha_trajectory=alpha_trajectory,
             input_len=input_len,
             layer_id=layer_id
         )
-        # Extract the window slice
-        window_c_t = c_t[0, window_start:window_end]  # [window_len]
-        is_deep = window_c_t >= self.deep_thinking_threshold
-        local_dtr = is_deep.float().mean().item()
+        # Extract the window slice from the CPU list
+        # Note: the returned list is mapped to generated tokens only!
+        gen_w_start = max(0, window_start - input_len)
+        gen_w_end = min(len(c_t_lists[0]), window_end - input_len)
+        
+        if gen_w_start >= gen_w_end:
+            return 0.0
+
+        window_c_t = c_t_lists[0][gen_w_start:gen_w_end]
+        is_deep = [1 for c in window_c_t if c >= self.deep_thinking_threshold]
+        local_dtr = len(is_deep) / len(window_c_t)
         return local_dtr
 
 

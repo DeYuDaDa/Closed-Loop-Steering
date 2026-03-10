@@ -124,19 +124,23 @@ def main():
             w_end = prob.get("intervention_end")
 
             try:
+                # Calculate full trajectory (GPU chunked internally)
+                dtr_scores, c_t_lists = dtr_calc.calculate(output_ids_gpu, **replay_args)
+                
+                c_t_traj = c_t_lists[0] if c_t_lists else []
+                prob["dtr_trajectory"] = c_t_traj
+                
+                # Default to full sequence DTR
+                local_dtr = dtr_scores[0] if dtr_scores else float("nan")
+
+                # If intervention window exists, compute local DTR on the slice
                 if w_start is not None and w_end is not None:
-                    abs_w_start = input_len + w_start
-                    abs_w_end = input_len + w_end
-                    if abs_w_start >= abs_w_end:
-                        dtr_scores, _ = dtr_calc.calculate(output_ids_gpu, **replay_args)
-                        local_dtr = dtr_scores[0]
-                    else:
-                        local_dtr = dtr_calc.calculate_local_dtr(
-                            output_ids_gpu, abs_w_start, abs_w_end, **replay_args
-                        )
-                else:
-                    dtr_scores, _ = dtr_calc.calculate(output_ids_gpu, **replay_args)
-                    local_dtr = dtr_scores[0]
+                    gen_w_start = max(0, w_start)
+                    gen_w_end = min(len(c_t_traj), w_end)
+                    if gen_w_start < gen_w_end:
+                        window_c_t = c_t_traj[gen_w_start:gen_w_end]
+                        is_deep = sum(1 for c in window_c_t if c >= dtr_calc.deep_thinking_threshold)
+                        local_dtr = is_deep / len(window_c_t)
                 
                 print(f"    Prob {i+1:02d}: DTR = {local_dtr:.4f}  |  PPL = {ppl:.2f}")
 
