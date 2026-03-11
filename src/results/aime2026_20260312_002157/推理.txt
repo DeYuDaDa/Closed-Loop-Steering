@@ -1,0 +1,158 @@
+(llama_factory) root@autodl-container-8b4241ac0b-76e35447:~/Closed-Loop-Steering-System/src# python run_experiment.py --dataset dataset/aime2026.jsonl
+
+📂 Loading dataset: dataset/aime2026.jsonl
+   Loaded 30 problems from aime2026
+
+🔧 Loading model from /root/autodl-tmp/qwen3-8b...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading checkpoint shards: 100%|████████████████████████████████████████████| 5/5 [00:03<00:00,  1.62it/s]
+[VectorInjector] ✅ Loaded 'critic' from ./vectors/qwen3-8b/critic.pt
+  shape=[4096], norm=1.0000, coeff=1.0
+  📏 Vector raw norm (before normalization): 0.9999
+  📏 Vector final norm (after normalization): 0.9999
+  ℹ️  Steering uses unit-direction vector; effective coeff is controlled by alpha (PID output).
+
+============================================================
+  [aime2026] EXPERIMENT MODE: Baseline
+============================================================
+  Using BATCHED generation (batch_size=4) for ALL modes...
+  ❌ Problem 1: pred=5 expected=277 | Tokens=8192 | Rep=0.064
+  ❌ Problem 2: pred=1 expected=62 | Tokens=8272 | Rep=0.064
+  ❌ Problem 3: pred=0 expected=79 | Tokens=8221 | Rep=0.138
+  ❌ Problem 4: pred=1 expected=70 | Tokens=8281 | Rep=0.134
+  ❌ Problem 5: pred=0 expected=65 | Tokens=8192 | Rep=0.092
+  ❌ Problem 6: pred=20 expected=441 | Tokens=8275 | Rep=0.027
+  ❌ Problem 7: pred=395 expected=396 | Tokens=8260 | Rep=0.056
+  ❌ Problem 8: pred=1 expected=244 | Tokens=8272 | Rep=0.032
+  ❌ Problem 9: pred=6 expected=29 | Tokens=8196 | Rep=0.138
+  ❌ Problem 10: pred=13 expected=156 | Tokens=8268 | Rep=0.048
+  ❌ Problem 11: pred=3 expected=896 | Tokens=8216 | Rep=0.078
+  ❌ Problem 12: pred=39 expected=161 | Tokens=8192 | Rep=0.043
+  ❌ Problem 13: pred=0 expected=39 | Tokens=8268 | Rep=0.077
+  ❌ Problem 14: pred=5 expected=681 | Tokens=8335 | Rep=0.065
+  ❌ Problem 15: pred=2 expected=83 | Tokens=8192 | Rep=0.076
+  ❌ Problem 16: pred=1 expected=178 | Tokens=8287 | Rep=0.062
+  ❌ Problem 17: pred=0 expected=243 | Tokens=8192 | Rep=0.106
+  ❌ Problem 18: pred=707 expected=503 | Tokens=8378 | Rep=0.060
+  ❌ Problem 19: pred=9 expected=279 | Tokens=8371 | Rep=0.039
+  ✅ Problem 20: pred=190 expected=190 | Tokens=8334 | Rep=0.064
+  ❌ Problem 21: pred=4 expected=50 | Tokens=8241 | Rep=0.080
+  ❌ Problem 22: pred=2 expected=754 | Tokens=8191 | Rep=0.115
+  ❌ Problem 23: pred=0 expected=245 | Tokens=8228 | Rep=0.085
+  ❌ Problem 24: pred=0 expected=669 | Tokens=8211 | Rep=0.036
+  ✅ Problem 25: pred=850 expected=850 | Tokens=8192 | Rep=0.059
+  ❌ Problem 26: pred=2 expected=132 | Tokens=8239 | Rep=0.084
+  ❌ Problem 27: pred=10 expected=223 | Tokens=8194 | Rep=0.073
+  ❌ Problem 28: pred=0 expected=107 | Tokens=8212 | Rep=0.104
+  ❌ Problem 29: pred=1 expected=157 | Tokens=8192 | Rep=0.168
+  ❌ Problem 30: pred=0 expected=393 | Tokens=8202 | Rep=0.101
+
+  [Baseline] SUMMARY: Pass@1=6.67% (2/30) | AvgTokens=8243 | Rep=0.079 | PPL=N/A | DTR=N/A
+
+============================================================
+  [aime2026] EXPERIMENT MODE: Continuous
+============================================================
+  Using BATCHED generation (batch_size=4) for ALL modes...
+  ✅ Problem 1: pred=277 expected=277 | Tokens=8192 | Rep=0.075
+  ❌ Problem 2: pred=2 expected=62 | Tokens=8272 | Rep=0.088
+  ❌ Problem 3: pred=200 expected=79 | Tokens=8221 | Rep=0.077
+  ❌ Problem 4: pred=8 expected=70 | Tokens=8281 | Rep=0.098
+  ❌ Problem 5: pred=45 expected=65 | Tokens=8192 | Rep=0.043
+  ❌ Problem 6: pred=20 expected=441 | Tokens=8275 | Rep=0.052
+  ❌ Problem 7: pred=8 expected=396 | Tokens=8260 | Rep=0.039
+  ❌ Problem 8: pred=2 expected=244 | Tokens=8272 | Rep=0.052
+  ❌ Problem 9: pred=4 expected=29 | Tokens=8196 | Rep=0.092
+  ❌ Problem 10: pred=0 expected=156 | Tokens=8268 | Rep=0.152
+  ❌ Problem 11: pred=32 expected=896 | Tokens=8216 | Rep=0.074
+  ❌ Problem 12: pred=3 expected=161 | Tokens=8192 | Rep=0.043
+  ❌ Problem 13: pred=1 expected=39 | Tokens=8268 | Rep=0.040
+  ❌ Problem 14: pred=72 expected=681 | Tokens=8335 | Rep=0.080
+  ❌ Problem 15: pred=10 expected=83 | Tokens=8192 | Rep=0.098
+  ❌ Problem 16: pred=30 expected=178 | Tokens=8287 | Rep=0.060
+  ❌ Problem 17: pred=1 expected=243 | Tokens=8192 | Rep=0.085
+  ❌ Problem 18: pred=0 expected=503 | Tokens=8378 | Rep=0.088
+  ❌ Problem 19: pred=1 expected=279 | Tokens=8371 | Rep=0.052
+  ❌ Problem 20: pred=3 expected=190 | Tokens=8334 | Rep=0.141
+  ❌ Problem 21: pred=4 expected=50 | Tokens=8241 | Rep=0.043
+  ❌ Problem 22: pred=0 expected=754 | Tokens=8192 | Rep=0.050
+  ❌ Problem 23: pred=2 expected=245 | Tokens=8228 | Rep=0.073
+  ❌ Problem 24: pred=1 expected=669 | Tokens=8211 | Rep=0.016
+  ❌ Problem 25: pred=2 expected=850 | Tokens=8192 | Rep=0.059
+  ❌ Problem 26: pred=1 expected=132 | Tokens=8238 | Rep=0.128
+  ❌ Problem 27: pred=4 expected=223 | Tokens=8194 | Rep=0.049
+  ❌ Problem 28: pred=1 expected=107 | Tokens=8212 | Rep=0.080
+  ❌ Problem 29: pred=6 expected=157 | Tokens=8192 | Rep=0.147
+  ❌ Problem 30: pred=7 expected=393 | Tokens=8202 | Rep=0.096
+
+  [Continuous] SUMMARY: Pass@1=3.33% (1/30) | AvgTokens=8243 | Rep=0.076 | PPL=N/A | DTR=N/A
+
+============================================================
+  [aime2026] EXPERIMENT MODE: Dynamic_Spherical
+============================================================
+  Using BATCHED generation (batch_size=4) for ALL modes...
+  ✅ Problem 1: pred=277 expected=277 | Tokens=8192 | Rep=0.049
+  ❌ Problem 2: pred=2 expected=62 | Tokens=8272 | Rep=0.054
+  ❌ Problem 3: pred=42 expected=79 | Tokens=8221 | Rep=0.136
+  ❌ Problem 4: pred=1 expected=70 | Tokens=8281 | Rep=0.124
+  ❌ Problem 5: pred=0 expected=65 | Tokens=8192 | Rep=0.058
+  ❌ Problem 6: pred=12 expected=441 | Tokens=8275 | Rep=0.037
+  ❌ Problem 7: pred=720 expected=396 | Tokens=8260 | Rep=0.089
+  ❌ Problem 8: pred=11 expected=244 | Tokens=8272 | Rep=0.053
+  ❌ Problem 9: pred=2 expected=29 | Tokens=8196 | Rep=0.102
+  ❌ Problem 10: pred=0 expected=156 | Tokens=8268 | Rep=0.100
+  ❌ Problem 11: pred=8 expected=896 | Tokens=8216 | Rep=0.073
+  ❌ Problem 12: pred=39 expected=161 | Tokens=8191 | Rep=0.048
+  ❌ Problem 13: pred=503 expected=39 | Tokens=8268 | Rep=0.049
+  ❌ Problem 14: pred=0 expected=681 | Tokens=8335 | Rep=0.088
+  ❌ Problem 15: pred=2 expected=83 | Tokens=8192 | Rep=0.073
+  ❌ Problem 16: pred=4 expected=178 | Tokens=8287 | Rep=0.087
+  ❌ Problem 17: pred=1 expected=243 | Tokens=8192 | Rep=0.132
+  ❌ Problem 18: pred=45 expected=503 | Tokens=8378 | Rep=0.075
+  ❌ Problem 19: pred=10 expected=279 | Tokens=8371 | Rep=0.036
+  ❌ Problem 20: pred=52 expected=190 | Tokens=8334 | Rep=0.057
+  ❌ Problem 21: pred=9 expected=50 | Tokens=8241 | Rep=0.088
+  ❌ Problem 22: pred=3 expected=754 | Tokens=8192 | Rep=0.058
+  ❌ Problem 23: pred=0 expected=245 | Tokens=8228 | Rep=0.089
+  ❌ Problem 24: pred=10 expected=669 | Tokens=8211 | Rep=0.042
+  ✅ Problem 25: pred=850 expected=850 | Tokens=8192 | Rep=0.068
+  ❌ Problem 26: pred=0 expected=132 | Tokens=8239 | Rep=0.080
+  ❌ Problem 27: pred=250 expected=223 | Tokens=8194 | Rep=0.050
+  ❌ Problem 28: pred=2 expected=107 | Tokens=8212 | Rep=0.095
+  ❌ Problem 29: pred=2 expected=157 | Tokens=8192 | Rep=0.187
+  ❌ Problem 30: pred=2 expected=393 | Tokens=8202 | Rep=0.110
+
+  📊 [Dynamic_Spherical] MODULE DIAGNOSTICS:
+    StateMonitor (TECA):     All 30 problems have TECA trajectories
+    PID Controller:          10/30 problems triggered intervention (α>0)
+    Spherical Steering:      Mean active ratio = 32.27%, Mean max α = 0.1000
+    ThinkBrake Convergence:  10/30 problems reached convergence
+
+  [Dynamic_Spherical] SUMMARY: Pass@1=6.67% (2/30) | AvgTokens=8243 | Rep=0.080 | PPL=N/A | DTR=N/A
+
+📊 Raw results saved to ./results/aime2026_20260312_002157/experiment_results.json
+/root/Closed-Loop-Steering-System/src/evaluation_visualizer.py:128: UserWarning: set_ticklabels() should only be used with a fixed number of ticks, i.e. after set_ticks() or using a FixedLocator.
+  ax.set_xticklabels(
+/root/Closed-Loop-Steering-System/src/evaluation_visualizer.py:225: UserWarning: set_ticklabels() should only be used with a fixed number of ticks, i.e. after set_ticks() or using a FixedLocator.
+  ax.set_xticklabels(
+✅ Evaluation figure saved to ./results/aime2026_20260312_002157/intervention_evaluation_matrix.png
+✅ PDF version saved to ./results/aime2026_20260312_002157/intervention_evaluation_matrix.pdf
+
+================================================================================
+                               EVALUATION SUMMARY
+================================================================================
+Mode                       Acc    Rep%      PPL  Tokens     DTR
+--------------------------------------------------------------------------------
+Baseline                  0.07    7.9%      nan    8243     nan
+Continuous                0.03    7.6%      nan    8243     nan
+Dynamic_Spherical         0.07    8.0%      nan    8243     nan
+================================================================================
+
+============================================================
+  AIME BENCHMARK REPORT — aime2026
+============================================================
+  Baseline               Pass@1: 6.67% (2/30)
+  Continuous             Pass@1: 3.33% (1/30)
+  Dynamic_Spherical      Pass@1: 6.67% (2/30)
+============================================================
+
+(llama_factory) root@autodl-container-8b4241ac0b-76e35447:~/Closed-Loop-Steering-System/src# 
