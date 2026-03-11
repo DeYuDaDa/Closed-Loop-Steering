@@ -171,6 +171,15 @@ def run_batched_generation(
         state = InjectionState(batch_size=actual_bs, device=model.device)
         pid = None
         processors = LogitsProcessorList()
+
+        # Protection against fp16/bf16 left-padding NaN generation bugs (FlashAttention)
+        class InfNanProtectionProcessor:
+            def __call__(self, input_ids, scores):
+                if torch.isnan(scores).any() or torch.isinf(scores).any():
+                    scores = torch.nan_to_num(scores, nan=-1e4, posinf=1e4, neginf=-1e4)
+                return scores
+
+        processors.append(InfNanProtectionProcessor())
         
         if mode == "Continuous":
             state.intervention_active.fill_(True)
