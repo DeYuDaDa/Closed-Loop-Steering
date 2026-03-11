@@ -63,8 +63,10 @@ def spherical_rotate(
 
     # 6. Rotate in the h-v plane
     if isinstance(alpha, torch.Tensor):
-        # Reshape [batch] to [batch, 1, 1] for broadcasting
-        alpha_b = alpha.view(-1, 1, 1)
+        # Dynamically append dimensions so it broadcasts with h
+        alpha_b = alpha
+        while alpha_b.dim() < h.dim():
+            alpha_b = alpha_b.unsqueeze(-1)
         cos_a = torch.cos(alpha_b)
         sin_a = torch.sin(alpha_b)
     else:
