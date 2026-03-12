@@ -48,8 +48,8 @@ REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
 
 # ======================== AIME Benchmark ========================
 DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
-AIME_MAX_TOKENS = 8192        # Extended token budget for math reasoning
-BATCH_SIZE = 4                # Batch size for Baseline / Continuous modes
+AIME_MAX_TOKENS = 4096        # Extended token budget for math reasoning
+BATCH_SIZE = 8                # Batch size for Baseline / Continuous modes
 MAX_NEW_TOKENS = 8192
 TEMPERATURE = 0.7
 TOP_P = 0.95

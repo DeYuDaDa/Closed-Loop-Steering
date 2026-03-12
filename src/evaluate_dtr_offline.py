@@ -7,6 +7,8 @@ this from the generation phase, we prevent CUDA allocator fragmentation and
 guarantee 100% stable GPU utilization during inference.
 """
 
+# python evaluate_dtr_offline.py --result 
+
 import sys
 import gc
 import json
