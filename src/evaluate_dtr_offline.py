@@ -57,8 +57,11 @@ def main():
         MODEL_PATH, torch_dtype=torch.bfloat16, device_map="auto"
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Ensure pad token differs from eos_token (same fix as run_experiment.py)
+    ENDOFTEXT_ID = 151643
+    if tokenizer.pad_token_id is None or tokenizer.pad_token_id == tokenizer.eos_token_id:
+        tokenizer.pad_token_id = ENDOFTEXT_ID
+        tokenizer.pad_token = tokenizer.convert_ids_to_tokens(ENDOFTEXT_ID)
 
     # 2. Load Control Vector (for Intervention Replay!)
     control_vector = load_control_vector(

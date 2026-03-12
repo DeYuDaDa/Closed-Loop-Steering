@@ -281,22 +281,47 @@ def calculate_ppl(model, tokenizer, text: str) -> float:
 
     PPL = exp(average cross-entropy loss per token).
 
+    Handles long texts by truncating to model's context window,
+    and guards against NaN/Inf from numerical instability.
+
     Args:
         model: HuggingFace causal LM.
         tokenizer: Corresponding tokenizer.
         text: Text string to evaluate.
 
     Returns:
-        ppl: Perplexity value.
+        ppl: Perplexity value, or float('nan') on failure.
     """
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    if not text or not text.strip():
+        return float("nan")
+
+    # Truncate to fit within model context window
+    max_pos = getattr(model.config, "max_position_embeddings", 131072)
+    max_tokens = min(max_pos, 8192) - 64  # Leave margin for safety
+
+    inputs = tokenizer(
+        text, return_tensors="pt",
+        truncation=True, max_length=max_tokens,
+    ).to(model.device)
     input_ids = inputs.input_ids
+
+    # Need at least 2 tokens for meaningful PPL
+    if input_ids.shape[1] < 2:
+        return float("nan")
 
     with torch.no_grad():
         outputs = model(input_ids, labels=input_ids)
-        loss = outputs.loss  # Average cross-entropy per token
+        loss = outputs.loss
 
-    ppl = math.exp(loss.item())
+    # Guard against NaN / Inf loss (can occur with bf16 + long sequences)
+    if loss is None or torch.isnan(loss) or torch.isinf(loss):
+        return float("nan")
+
+    try:
+        ppl = math.exp(loss.item())
+    except OverflowError:
+        ppl = float("inf")
+
     return ppl
 
 

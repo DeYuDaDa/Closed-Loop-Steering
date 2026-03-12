@@ -1,0 +1,38 @@
+Baseline: dict
+    accuracy: float
+    correct_count: int
+    total_count: int
+    repetition: float
+    ppl: float
+    tokens: int
+    local_dtr: float
+    teca_trajectory: list (empty)
+    alpha_trajectory: list (empty)
+    per_problem: list (element: {'id': 'int', 'expected': 'int', 'predicted': 'int', 'correct': 'bool', 'num_tokens': 'int', 'repetition': 'float', 'full_response': 'str', 'output_ids': 'list (element: int)', 'input_len': 'int', 'dtr_trajectory': 'list (element: int)', 'local_dtr': 'float', 'ppl': 'float'})
+Continuous: dict
+    accuracy: float
+    correct_count: int
+    total_count: int
+    repetition: float
+    ppl: float
+    tokens: int
+    local_dtr: float
+    teca_trajectory: list (element: float)
+    alpha_trajectory: list (element: float)
+    per_problem: list (element: {'id': 'int', 'expected': 'int', 'predicted': 'int', 'correct': 'bool', 'num_tokens': 'int', 'repetition': 'float', 'full_response': 'str', 'output_ids': 'list (element: int)', 'input_len': 'int', 'dtr_trajectory': 'list (element: int)', 'local_dtr': 'float', 'ppl': 'float'})
+Dynamic_Spherical: dict
+    accuracy: float
+    correct_count: int
+    total_count: int
+    repetition: float
+    ppl: float
+    tokens: int
+    local_dtr: float
+    teca_trajectory: list (element: float)
+    alpha_trajectory: list (element: float)
+    per_problem: list (element: {'id': 'int', 'expected': 'int', 'predicted': 'int', 'correct': 'bool', 'num_tokens': 'int', 'repetition': 'float', 'full_response': 'str', 'output_ids': 'list (element: int)', 'input_len': 'int', 'teca_trajectory': 'list (element: float)', 'alpha_trajectory': 'list (element: float)', 'entropy_trajectory': 'list (element: float)', 'intervention_start': 'int', 'intervention_end': 'int', 'convergence': 'bool', 'alpha_active_steps': 'int', 'alpha_max_value': 'float', 'alpha_mean_value': 'float', 'dtr_trajectory': 'list (element: int)', 'local_dtr': 'float', 'ppl': 'float'})
+    module_diagnostics: dict
+        problems_with_intervention: int
+        problems_with_convergence: int
+        mean_alpha_active_ratio: float
+        mean_max_alpha: float

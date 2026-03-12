@@ -129,29 +129,16 @@ def _extract_balanced_braces(text: str, start: int) -> Optional[str]:
         return text[start:i - 1].strip()
     return None
 
-def extract_answer(text: str) -> Optional[int]:
+def _extract_from_section(text: str) -> Optional[int]:
     """
-    Extract the final integer answer from model output using multiple
-    strategies (ordered by priority):
-
-      1. \\boxed{N}  — Standard LaTeX convention for math benchmarks
-      2. <answer>N</answer> — XML tag format
-      3. Last standalone integer in the text
-
-    Args:
-        text: The raw model-generated text.
-
-    Returns:
-        Extracted integer, or None if no valid integer is found.
+    Core extraction logic: try boxed, then answer tag, then last int.
     """
     if not text or not text.strip():
         return None
 
-    # Strategy 1: \boxed{...}  (match the LAST occurrence)
-    # Uses a balanced-brace approach to handle nested LaTeX like \boxed{3^{2}}
+    # Strategy 1: \\boxed{...}  (match the LAST occurrence)
     boxed_positions = [m.end() for m in re.finditer(r"\\boxed\s*\{", text)]
     if boxed_positions:
-        # Extract the last \boxed{...} content with balanced braces
         content = _extract_balanced_braces(text, boxed_positions[-1])
         if content is not None:
             integer = _parse_integer(content)
@@ -169,17 +156,54 @@ def extract_answer(text: str) -> Optional[int]:
             return integer
 
     # Strategy 3: Last standalone integer in the text
-    # Look for patterns like "the answer is 42" or "= 42" at the end
     # Only consider integers in valid AIME range [0, 999]
     all_ints = re.findall(r"\b(\d{1,3})\b", text)
     if all_ints:
-        # Walk backwards to find the last valid integer
         for candidate in reversed(all_ints):
             val = int(candidate)
             if 0 <= val <= 999:
                 return val
 
     return None
+
+
+def extract_answer(text: str) -> Optional[int]:
+    """
+    Extract the final integer answer from model output using multiple
+    strategies (ordered by priority):
+
+      1. \\boxed{N}  -- Standard LaTeX convention for math benchmarks
+      2. <answer>N</answer> -- XML tag format
+      3. Last standalone integer in the text
+
+    Handles garbled output by focusing on the answer section
+    (text after the last think-closing tag) first.
+
+    Args:
+        text: The raw model-generated text.
+
+    Returns:
+        Extracted integer, or None if no valid integer is found.
+    """
+    if not text or not text.strip():
+        return None
+
+    # --- Phase 1: Try answer section (after last think-closing tag) ---
+    # The model outputs <think>..reasoning..</think>..answer..
+    # The answer (with \\boxed{}) is in the section AFTER the closing tag.
+    THINK_END = "</think>"
+    last_think_end = text.rfind(THINK_END)
+    if last_think_end != -1:
+        answer_section = text[last_think_end + len(THINK_END):]
+        result = _extract_from_section(answer_section)
+        if result is not None:
+            return result
+
+    # --- Phase 2: Fallback to full text (but cap length to avoid garbled tail) ---
+    # If the text is very long, the tail is likely garbled noise; only use first 15000 chars.
+    MAX_MEANINGFUL_LEN = 15000
+    truncated = text[:MAX_MEANINGFUL_LEN] if len(text) > MAX_MEANINGFUL_LEN else text
+    return _extract_from_section(truncated)
 
 
 def _parse_integer(s: str) -> Optional[int]:

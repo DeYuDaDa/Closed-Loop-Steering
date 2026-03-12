@@ -240,7 +240,7 @@ def run_batched_generation(
                 do_sample=True,
                 temperature=TEMPERATURE,
                 top_p=TOP_P,
-                pad_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.pad_token_id,
                 logits_processor=processors,
             )
 
@@ -564,10 +564,13 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
-    # Ensure pad token is set
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    # Ensure pad token is set and DIFFERS from eos_token.
+    # Qwen3 eos = im_end (151645); native pad = endoftext (151643).
+    # If pad == eos, batched generate() cannot stop at EOS.
+    ENDOFTEXT_ID = 151643
+    if tokenizer.pad_token_id is None or tokenizer.pad_token_id == tokenizer.eos_token_id:
+        tokenizer.pad_token_id = ENDOFTEXT_ID
+        tokenizer.pad_token = tokenizer.convert_ids_to_tokens(ENDOFTEXT_ID)
 
     # ---- Load control vector ----
     control_vector = load_control_vector(
