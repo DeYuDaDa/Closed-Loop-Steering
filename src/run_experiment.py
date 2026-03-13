@@ -74,13 +74,25 @@ from dtr_utils import (
     calculate_repetition_rate,
 )
 from evaluation_visualizer import PlotVisualizer
-from aime_loader import (
+from loaders.aime_loader import (
     load_aime_dataset,
     list_aime_datasets,
     build_aime_prompt,
-    extract_answer,
-    check_answer,
-    collate_prompts,
+    extract_answer as extract_answer_aime,
+    check_answer as check_answer_aime,
+    collate_prompts as collate_prompts_aime,
+)
+from loaders.math500_loader import (
+    load_math500_dataset,
+    build_math500_prompt,
+    extract_answer_math500,
+    check_answer_math500,
+)
+from loaders.zebra_logic_loader import (
+    load_zebra_dataset,
+    build_zebra_prompt,
+    extract_answer_zebra,
+    check_answer_zebra,
 )
 
 
@@ -317,6 +329,7 @@ def run_full_experiment(
     modes: list[str] | None = None,
     control_vector: torch.Tensor | None = None,
     batch_size: int = BATCH_SIZE,
+    dataset_type: str = "aime",
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -346,8 +359,13 @@ def run_full_experiment(
         print(f"  [{dataset_name}] EXPERIMENT MODE: {mode}")
         print(f"{'='*60}")
 
-        # Build all prompts
-        prompts = collate_prompts(dataset)
+        # Build all prompts based on dataset type
+        if dataset_type == "math500":
+            prompts = [build_math500_prompt(p["problem"]) for p in dataset]
+        elif dataset_type == "zebralogic":
+            prompts = [build_zebra_prompt(p["puzzle"], p["question"]) for p in dataset]
+        else:
+            prompts = collate_prompts_aime(dataset)
 
         # ---- Run generation ----
         print(f"  Using BATCHED generation (batch_size={batch_size}) for ALL modes...")
@@ -370,10 +388,19 @@ def run_full_experiment(
         first_alpha_traj = []
 
         for i, (eval_item, result) in enumerate(zip(dataset, results_list)):
-            # Extract and check answer
-            predicted = extract_answer(result["text"])
-            expected = eval_item["answer"]
-            is_correct = check_answer(predicted, expected)
+            # Extract and check answer based on dataset type
+            if dataset_type == "math500":
+                predicted = extract_answer_math500(result["text"])
+                expected = eval_item["answer"]
+                is_correct = check_answer_math500(predicted, expected)
+            elif dataset_type == "zebralogic":
+                predicted = extract_answer_zebra(result["text"])
+                expected = eval_item["answer"]
+                is_correct = check_answer_zebra(predicted, expected)
+            else:
+                predicted = extract_answer_aime(result["text"])
+                expected = eval_item["answer"]
+                is_correct = check_answer_aime(predicted, expected)
 
             mode_correct += int(is_correct)
             mode_tokens_total += result["num_tokens"]
@@ -551,9 +578,22 @@ def main():
             dataset_path = available[int(choice)]
 
     dataset_name = os.path.splitext(os.path.basename(dataset_path))[0]
-    print(f"\n📂 Loading dataset: {dataset_path}")
-    dataset = load_aime_dataset(dataset_path)
-    print(f"   Loaded {len(dataset)} problems from {dataset_name}")
+    dataset_path_lower = dataset_path.lower()
+    
+    if "math500" in dataset_path_lower:
+        dataset_type = "math500"
+        print(f"\n📂 Loading MATH500 dataset: {dataset_path}")
+        dataset = load_math500_dataset(dataset_path)
+    elif "zebralogic" in dataset_path_lower:
+        dataset_type = "zebralogic"
+        print(f"\n📂 Loading ZebraLogic dataset: {dataset_path}")
+        dataset = load_zebra_dataset(dataset_path)
+    else:
+        dataset_type = "aime"
+        print(f"\n📂 Loading AIME dataset: {dataset_path}")
+        dataset = load_aime_dataset(dataset_path)
+        
+    print(f"   Loaded {len(dataset)} problems from {dataset_name} ({dataset_type})")
 
     # ---- Load model ----
     print(f"\n🔧 Loading model from {MODEL_PATH}...")
@@ -585,12 +625,13 @@ def main():
     # ---- Run experiments ----
     modes = args.modes if args.modes else None
     experiment_results = run_full_experiment(
-        model, tokenizer,
-        dataset=dataset,
-        dataset_name=dataset_name,
-        modes=modes,
-        control_vector=control_vector,
-    )
+    model, tokenizer,
+    dataset=dataset,
+    dataset_name=dataset_name,
+    modes=modes,
+    control_vector=control_vector,
+    dataset_type=dataset_type,
+)
 
     # ---- Save results ----
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
