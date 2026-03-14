@@ -177,16 +177,21 @@ def run_batched_generation(
         batch_prompts = prompts[batch_start:batch_start + batch_size]
         actual_bs = len(batch_prompts)
 
-        # Apply chat template securely to get IDs without text-splitting issues
-        encoded_prompts = tokenizer.apply_chat_template(
-            batch_prompts,
-            tokenize=True,
-            add_generation_prompt=True,
-        )
-        
-        # Manually append <think>\n token IDs to force reasoning mode
+        # Apply chat template securely to get IDs without text-splitting issues.
+        # NOTE: We call apply_chat_template once per message list (not on the whole batch)
+        # because some transformers versions return a flat list[int] for batch inputs,
+        # causing totally wrong tensor construction.
         think_ids = tokenizer.encode("<think>\n", add_special_tokens=False)
-        encoded_prompts = [ids + think_ids for ids in encoded_prompts]
+        
+        encoded_prompts = []
+        for messages in batch_prompts:
+            ids = tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+            # Manually append <think>\n to force chain-of-thought prefill
+            encoded_prompts.append(ids + think_ids)
 
         # Tokenize with left-padding to keep alignments simple
         tokenizer.padding_side = 'left'
