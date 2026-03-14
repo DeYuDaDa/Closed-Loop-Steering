@@ -190,11 +190,28 @@ def run_batched_generation(
 
         # Tokenize with left-padding to keep alignments simple
         tokenizer.padding_side = 'left'
-        inputs = tokenizer.pad(
-            [{"input_ids": ids} for ids in encoded_prompts],
-            padding=True,
-            return_tensors="pt",
-        ).to(model.device)
+        
+        # VERY IMPORTANT: The pad_token_id in input_ids must be a valid vocabulary index,
+        # otherwise CUDA embedding lookup (ScatterGather) will cause an OutOfBounds device assert.
+        # We use eos_token_id if pad_token_id is None, but ensure it's a valid integer > 0.
+        valid_pad_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
+        if tokenizer.pad_token_id is not None and tokenizer.pad_token_id >= 0:
+            valid_pad_id = tokenizer.pad_token_id
+            
+        max_len = max(len(ids) for ids in encoded_prompts)
+        
+        padded_ids = []
+        attention_mask = []
+        
+        for ids in encoded_prompts:
+            pad_len = max_len - len(ids)
+            padded_ids.append([valid_pad_id] * pad_len + ids)
+            attention_mask.append([0] * pad_len + [1] * len(ids))
+            
+        inputs = {
+            "input_ids": torch.tensor(padded_ids, dtype=torch.long, device=model.device),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long, device=model.device)
+        }
         
         # Reset to right padding just in case it's assumed elsewhere
         tokenizer.padding_side = 'right'
@@ -221,7 +238,7 @@ def run_batched_generation(
             pid = PIDController(batch_size=actual_bs, device=model.device)
             
         # Calculate actual input lengths per sequence in batch
-        input_lens = inputs.attention_mask.sum(dim=1).tolist()
+        input_lens = inputs["attention_mask"].sum(dim=1).tolist()
 
         if mode != "Baseline":
             monitor = StateMonitor(
@@ -282,7 +299,7 @@ def run_batched_generation(
         # Extract per-sequence results
         for i in range(actual_bs):
             # Find where the actual input ends (skip padding tokens)
-            input_mask = inputs.attention_mask[i]
+            input_mask = inputs["attention_mask"][i]
             input_len = input_mask.sum().item()
 
             generated_ids = output_ids[i, input_len:]
