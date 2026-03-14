@@ -24,9 +24,9 @@ CONVERGENCE_MARGIN_TAU = 0.25  # Margin threshold for convergence detection
 # The token id of </think> — will be resolved at runtime from the tokenizer
 
 # ======================== PID Controller ========================
-PID_KP = 1.0                  # Proportional gain 0.6
-PID_KI = 0.1                  # Integral gain
-PID_KD = 0.05                 # Derivative gain
+PID_KP = 2.0                  # Proportional gain 0.6
+PID_KI = 1.0                  # Integral gain
+PID_KD = 0.5                 # Derivative gain
 ALPHA_MAX = 1.5              # Maximum rotation angle (radians), ~17 degrees
 
 # ======================== Manifold Projection ========================

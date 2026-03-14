@@ -140,7 +140,7 @@ def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | N
 def run_batched_generation(
     model,
     tokenizer,
-    prompts: list[str],
+    prompts: list[list[dict]],
     mode: str,
     control_vector: torch.Tensor | None,
     batch_size: int = BATCH_SIZE,
@@ -154,7 +154,7 @@ def run_batched_generation(
     Args:
         model: The loaded causal LM.
         tokenizer: The tokenizer.
-        prompts: List of prompt strings.
+        prompts: List of prompt message dict lists.
         mode: "Baseline", "Continuous", or "Dynamic_Spherical".
         control_vector: The steering vector (or None).
         batch_size: Number of sequences per batch.
@@ -177,13 +177,23 @@ def run_batched_generation(
         batch_prompts = prompts[batch_start:batch_start + batch_size]
         actual_bs = len(batch_prompts)
 
+        # Apply chat template securely to get IDs without text-splitting issues
+        encoded_prompts = tokenizer.apply_chat_template(
+            batch_prompts,
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+        
+        # Manually append <think>\n token IDs to force reasoning mode
+        think_ids = tokenizer.encode("<think>\n", add_special_tokens=False)
+        encoded_prompts = [ids + think_ids for ids in encoded_prompts]
+
         # Tokenize with left-padding to keep alignments simple
         tokenizer.padding_side = 'left'
-        inputs = tokenizer(
-            batch_prompts,
-            return_tensors="pt",
+        inputs = tokenizer.pad(
+            [{"input_ids": ids} for ids in encoded_prompts],
             padding=True,
-            truncation=True,
+            return_tensors="pt",
         ).to(model.device)
         
         # Reset to right padding just in case it's assumed elsewhere

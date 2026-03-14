@@ -80,32 +80,32 @@ def list_aime_datasets(dataset_dir: str) -> list[str]:
 
 # ======================== Prompt Construction ========================
 
-def build_aime_prompt(problem: str) -> str:
+def build_aime_prompt(problem: str) -> list[dict]:
     """
     Construct a chat prompt for AIME problem solving.
 
     Uses the standard AIME benchmark prompt format:
     - System message instructs step-by-step reasoning
     - Requires final answer in \\boxed{} format
-    - Uses <think> tag to encourage chain-of-thought
 
     Args:
         problem: The AIME problem statement (may contain LaTeX).
 
     Returns:
-        Full chat prompt string.
+        List of message dicts (system and user roles).
     """
-    return (
-        "<|im_start|>system\n"
-        "You are a math competition expert. Solve the following problem "
-        "step by step with rigorous mathematical reasoning.\n"
-        "self-verification.\n"
-        "Put your final integer answer (0-999) within \\boxed{}."
-        "<|im_end|>\n"
-        "<|im_start|>user\n"
-        f"{problem}<|im_end|>\n"
-        "<|im_start|>assistant\n<think>\n"
-    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a math competition expert. Solve the following problem "
+                "step by step with rigorous mathematical reasoning.\n"
+                "self-verification.\n"
+                "Put your final integer answer (0-999) within \\boxed{}."
+            )
+        },
+        {"role": "user", "content": problem}
+    ]
 
 
 # ======================== Answer Extraction ========================
@@ -254,7 +254,7 @@ def check_answer(predicted: Optional[int], expected: int) -> bool:
 
 # ======================== Batch Utilities ========================
 
-def collate_prompts(problems: list[dict]) -> list[str]:
+def collate_prompts(problems: list[dict]) -> list[list[dict]]:
     """
     Build prompts for a batch of AIME problems.
 
@@ -262,6 +262,6 @@ def collate_prompts(problems: list[dict]) -> list[str]:
         problems: List of problem dicts with 'problem' key.
 
     Returns:
-        List of prompt strings.
+        List of prompt message dict lists.
     """
     return [build_aime_prompt(p["problem"]) for p in problems]
