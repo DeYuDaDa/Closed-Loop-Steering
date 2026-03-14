@@ -37,9 +37,10 @@ import argparse
 # caching allocator from creating permanent fragmentation holes when
 # tensors of varying sizes (KV caches, hidden states) are allocated
 # and freed in a loop.
+import config
 os.environ.setdefault(
     "PYTORCH_CUDA_ALLOC_CONF",
-    "expandable_segments:True,garbage_collection_threshold:0.7"
+    config.PYTORCH_CUDA_ALLOC_CONF
 )
 
 import torch
@@ -63,6 +64,15 @@ from config import (
     BATCH_SIZE,
     TEMPERATURE,
     TOP_P,
+    DEFAULT_DTYPE,
+    DEVICE_MAP,
+    DO_SAMPLE,
+    ENDOFTEXT_ID,
+    SAFE_SCORE_RANGE,
+    CONTINUOUS_ALPHA,
+    CAPTURE_HIDDEN_STATES,
+    RESULTS_TIMESTAMP_FMT,
+    JSON_INDENT,
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
@@ -188,14 +198,14 @@ def run_batched_generation(
         class InfNanProtectionProcessor:
             def __call__(self, input_ids, scores):
                 if torch.isnan(scores).any() or torch.isinf(scores).any():
-                    scores = torch.nan_to_num(scores, nan=-1e4, posinf=1e4, neginf=-1e4)
+                    scores = torch.nan_to_num(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
                 return scores
 
         processors.append(InfNanProtectionProcessor())
         
         if mode == "Continuous":
             state.intervention_active.fill_(True)
-            state.alpha.fill_(config.ALPHA_MAX)  # Fixed continuous alpha
+            state.alpha.fill_(CONTINUOUS_ALPHA)  # Use specialized continuous alpha
         elif mode in ("Dynamic_Spherical",):
             # PID controller mapped to batch size
             pid = PIDController(batch_size=actual_bs, device=model.device)
@@ -236,8 +246,8 @@ def run_batched_generation(
                 state=state,
                 control_vector=control_vector,
                 mode=mode,
-                continuous_alpha=config.ALPHA_MAX,
-                capture_hidden_states=False, # We use offline DTR script now
+                continuous_alpha=CONTINUOUS_ALPHA,
+                capture_hidden_states=CAPTURE_HIDDEN_STATES, # We use offline DTR script now
             )
             layer = model.model.layers[LAYER_ID]
             handle = layer.register_forward_hook(hook_fn)
@@ -249,7 +259,7 @@ def run_batched_generation(
             output_ids = model.generate(
                 **inputs,
                 max_new_tokens=AIME_MAX_TOKENS,
-                do_sample=True,
+                do_sample=DO_SAMPLE,
                 temperature=TEMPERATURE,
                 top_p=TOP_P,
                 pad_token_id=tokenizer.pad_token_id,
@@ -595,19 +605,17 @@ def main():
         
     print(f"   Loaded {len(dataset)} problems from {dataset_name} ({dataset_type})")
 
-    # ---- Load model ----
-    print(f"\n🔧 Loading model from {MODEL_PATH}...")
+    model_dtype = getattr(torch, DEFAULT_DTYPE)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_PATH,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
+        torch_dtype=model_dtype,
+        device_map=DEVICE_MAP,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
     # Ensure pad token is set and DIFFERS from eos_token.
     # Qwen3 eos = im_end (151645); native pad = endoftext (151643).
     # If pad == eos, batched generate() cannot stop at EOS.
-    ENDOFTEXT_ID = 151643
     if tokenizer.pad_token_id is None or tokenizer.pad_token_id == tokenizer.eos_token_id:
         tokenizer.pad_token_id = ENDOFTEXT_ID
         tokenizer.pad_token = tokenizer.convert_ids_to_tokens(ENDOFTEXT_ID)
@@ -616,7 +624,7 @@ def main():
     control_vector = load_control_vector(
         VECTOR_DIR,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        dtype=torch.bfloat16,
+        dtype=model_dtype,
     )
     if control_vector is None:
         print("⚠️  No control vector loaded. "
@@ -634,7 +642,7 @@ def main():
 )
 
     # ---- Save results ----
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime(RESULTS_TIMESTAMP_FMT)
     results_subdir = os.path.join(RESULTS_DIR, f"{dataset_name}_{timestamp}")
     os.makedirs(results_subdir, exist_ok=True)
 
@@ -648,7 +656,7 @@ def main():
 
     results_path = os.path.join(results_subdir, "experiment_results.json")
     with open(results_path, "w", encoding="utf-8") as f:
-        json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+        json.dump(serializable_results, f, indent=JSON_INDENT, ensure_ascii=False)
     print(f"\n📊 Raw results saved to {results_path}")
 
     # ---- Generate visualization ----

@@ -18,15 +18,15 @@ Mathematical formulation (Gram-Schmidt + rotation):
 """
 
 import torch
-import torch
 import math
+from config import MATH_EPSILON, CONTINUOUS_ALPHA, CAPTURE_HIDDEN_STATES
 
 
 def spherical_rotate(
     h: torch.Tensor,
     v: torch.Tensor,
     alpha: torch.Tensor | float,
-    eps: float = 1e-6,
+    eps: float = MATH_EPSILON,
 ) -> torch.Tensor:
     """
     Perform SLERP (Spherical Linear Interpolation) to steer h toward v.
@@ -91,8 +91,8 @@ def create_steering_hook(
     state,
     control_vector: torch.Tensor,
     mode: str = "Dynamic_Spherical",
-    continuous_alpha: float = 0.15,
-    capture_hidden_states: bool = False,
+    continuous_alpha: float = CONTINUOUS_ALPHA,
+    capture_hidden_states: bool = CAPTURE_HIDDEN_STATES,
 ):
     """
     Factory function that creates a forward hook for spherical steering.

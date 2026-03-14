@@ -20,7 +20,14 @@ import math
 import numpy as np
 from collections import Counter
 
-from config import DTR_G, DTR_RHO, REPETITION_NGRAM
+from config import (
+    DTR_G,
+    DTR_RHO,
+    REPETITION_NGRAM,
+    DTR_CHUNK_SIZE,
+    DEFAULT_DTR_LAYER,
+    CONTEXT_WINDOW_LIMIT,
+)
 from spherical_injector import spherical_rotate
 
 
@@ -73,7 +80,7 @@ class DTRCalculator:
         control_vector: torch.Tensor | None = None,
         alpha_trajectory: list[float] | None = None,
         input_len: int = 0,
-        layer_id: int = 16,
+        layer_id: int = DEFAULT_DTR_LAYER,
     ):
         """
         Compute DTR and per-token convergence depth for the full sequence.
@@ -177,7 +184,7 @@ class DTRCalculator:
 
         # Invert the loop to process in sequence chunks!
         # This prevents the LM head vocabulary matrix (V=152064) from blowing up VRAM.
-        chunk_size = 256
+        chunk_size = DTR_CHUNK_SIZE
         for start_idx in range(input_len, seq_len, chunk_size):
             end_idx = min(start_idx + chunk_size, seq_len)
             chunk_len = end_idx - start_idx
@@ -237,7 +244,7 @@ class DTRCalculator:
         control_vector: torch.Tensor | None = None,
         alpha_trajectory: list[float] | None = None,
         input_len: int = 0,
-        layer_id: int = 16,
+        layer_id: int = DEFAULT_DTR_LAYER,
     ) -> float:
         """
         Compute Local DTR within a specific intervention window.
@@ -296,8 +303,8 @@ def calculate_ppl(model, tokenizer, text: str) -> float:
         return float("nan")
 
     # Truncate to fit within model context window
-    max_pos = getattr(model.config, "max_position_embeddings", 131072)
-    max_tokens = min(max_pos, 8192) - 64  # Leave margin for safety
+    max_pos = getattr(model.config, "max_position_embeddings", CONTEXT_WINDOW_LIMIT)
+    max_tokens = min(max_pos, CONTEXT_WINDOW_LIMIT) - 64  # Leave margin for safety
 
     inputs = tokenizer(
         text, return_tensors="pt",

@@ -112,10 +112,18 @@ class StateMonitor(LogitsProcessor):
         
         # --- 1. Compute current token entropy H_t for the whole batch ---
         # Apply temperature scaling and softmax
-        probs = F.softmax(scores / self.temperature, dim=-1)  # [batch, V]
+        # probs = F.softmax(scores / self.temperature, dim=-1)  # [batch, V]
+        # # Shannon entropy: H = -sum(p * log(p))
+        # log_probs = torch.log(probs + self.epsilon)
+        # H_t = -torch.sum(probs * log_probs, dim=-1)  # [batch]
+        # --- 1. Compute current token entropy H_t for the whole batch ---
+        # 必须使用 T=1.0 的原始 Logits 来真实反映模型的迷茫度
+        probs = F.softmax(scores, dim=-1)         # [batch, V]
+        log_probs = F.log_softmax(scores, dim=-1) # 使用原生 API 保证数值稳定
+        
         # Shannon entropy: H = -sum(p * log(p))
-        log_probs = torch.log(probs + self.epsilon)
         H_t = -torch.sum(probs * log_probs, dim=-1)  # [batch]
+
 
         # Determine which sequences just generated EOS token
         # input_ids shape is [batch, current_length]
