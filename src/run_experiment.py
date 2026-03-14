@@ -231,14 +231,19 @@ def run_batched_generation(
                 self.eos_id = eos_id if isinstance(eos_id, int) else (eos_id[0] if isinstance(eos_id, list) else 0)
 
             def __call__(self, input_ids, scores):
-                # Check for sequences with NaNs/Infs
-                invalid_mask = torch.isnan(scores).any(dim=-1) | torch.isinf(scores).any(dim=-1)
-                if invalid_mask.any():
-                    # Replace NaNs to prevent PyTorch multinomial crash
-                    scores = torch.nan_to_num(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
-                    # Force corrupted sequences to generate EOS
-                    scores[invalid_mask, :] = -SAFE_SCORE_RANGE
-                    scores[invalid_mask, self.eos_id] = SAFE_SCORE_RANGE
+                # Replace NaNs/Infs in the logits to prevent PyTorch multinomial crash
+                # Replace NaNs with a very negative value so they are safely ignored by softmax
+                torch.nan_to_num_(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
+                
+                # Check for COMPLETE sequence collapse (i.e. all valid logits became strongly negative)
+                max_scores, _ = scores.max(dim=-1)
+                collapsed_mask = max_scores <= (-SAFE_SCORE_RANGE + 1.0)
+                
+                if collapsed_mask.any():
+                    # Force fully corrupted sequences to generate EOS safely instead of uniformly sampling from padding
+                    scores[collapsed_mask, :] = -SAFE_SCORE_RANGE
+                    scores[collapsed_mask, self.eos_id] = SAFE_SCORE_RANGE
+                    
                 return scores
 
         processors.append(InfNanProtectionProcessor(valid_pad_id)) # Using valid_pad_id or eos_token_id to terminate safely
