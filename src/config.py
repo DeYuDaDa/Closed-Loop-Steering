@@ -18,10 +18,10 @@ CONVERGENCE_MARGIN_TAU = 0.25  # Margin threshold for convergence detection
 # The token id of </think> — will be resolved at runtime from the tokenizer
 
 # ======================== PID Controller ========================
-PID_KP = 0.6                  # Proportional gain
+PID_KP = 1.0                  # Proportional gain 0.6
 PID_KI = 0.1                  # Integral gain
 PID_KD = 0.05                 # Derivative gain
-ALPHA_MAX = 0.30              # Maximum rotation angle (radians), ~17 degrees
+ALPHA_MAX = 1.5              # Maximum rotation angle (radians), ~17 degrees
 
 # ======================== Manifold Projection ========================
 PCA_N_COMPONENTS = 10         # Number of principal components to retain
@@ -48,8 +48,8 @@ REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
 
 # ======================== AIME Benchmark ========================
 DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
-AIME_MAX_TOKENS = 4096        # Extended token budget for math reasoning
-BATCH_SIZE = 8                # Batch size for Baseline / Continuous modes
-MAX_NEW_TOKENS = 8192
+AIME_MAX_TOKENS = 2048        # Extended token budget for math reasoning
+BATCH_SIZE = 16                # Batch size for Baseline / Continuous modes
+MAX_NEW_TOKENS = 2048
 TEMPERATURE = 0.7
 TOP_P = 0.95

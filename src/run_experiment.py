@@ -195,7 +195,7 @@ def run_batched_generation(
         
         if mode == "Continuous":
             state.intervention_active.fill_(True)
-            state.alpha.fill_(0.15)  # Fixed continuous alpha
+            state.alpha.fill_(config.ALPHA_MAX)  # Fixed continuous alpha
         elif mode in ("Dynamic_Spherical",):
             # PID controller mapped to batch size
             pid = PIDController(batch_size=actual_bs, device=model.device)
@@ -236,7 +236,7 @@ def run_batched_generation(
                 state=state,
                 control_vector=control_vector,
                 mode=mode,
-                continuous_alpha=0.15,
+                continuous_alpha=config.ALPHA_MAX,
                 capture_hidden_states=False, # We use offline DTR script now
             )
             layer = model.model.layers[LAYER_ID]

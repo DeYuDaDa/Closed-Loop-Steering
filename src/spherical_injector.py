@@ -26,72 +26,66 @@ def spherical_rotate(
     h: torch.Tensor,
     v: torch.Tensor,
     alpha: torch.Tensor | float,
-    eps: float = 1e-8,
+    eps: float = 1e-6,
 ) -> torch.Tensor:
     """
-    Perform norm-preserving spherical rotation of h toward v by angle α.
-
-    This is a pure function with no side effects — suitable for use
-    inside a forward hook.
-    Supports batched processing natively.
+    Perform SLERP (Spherical Linear Interpolation) to steer h toward v.
+    Strictly aligned with the official Spherical Steering paper logic.
 
     Args:
         h: Hidden state tensor, shape [batch, 1, d].
-        v: Normalized control vector, shape broadcastable to h.
-        alpha: Rotation angle in radians, shape [batch] or float.
+        v: Normalized target control vector, shape broadcastable to h.
+        alpha: Steering strength percentage [0.0, 1.0]. 
+               0.0 = no steering, 1.0 = strictly aligned with v.
         eps: Small constant for numerical stability.
 
     Returns:
         h_new: Rotated hidden state with ||h_new|| == ||h||.
     """
+    orig_dtype = h.dtype
+    h = h.float()
+    v = v.float()
+
     # 1. Compute and save the original norm
-    h_norm = torch.norm(h, dim=-1, keepdim=True)  # [batch, 1, 1]
+    h_norm = torch.norm(h, dim=-1, keepdim=True).clamp_min(eps)
+    h_hat = h / h_norm
 
-    # 2. Get unit direction of h
-    h_hat = h / (h_norm + eps)  # [batch, 1, d]
+    # 2. Compute current angle (theta) between h_hat and v
+    cos_theta = torch.sum(h_hat * v, dim=-1, keepdim=True).clamp(-1.0 + eps, 1.0 - eps)
+    theta = torch.acos(cos_theta)
 
-    # 3. Gram-Schmidt: find component of v orthogonal to h_hat
-    v_dot_h = torch.sum(v * h_hat, dim=-1, keepdim=True)  # [batch, 1, 1]
-    u = v - v_dot_h * h_hat  # [batch, 1, d]
-
-    # 4. Normalize u to get orthonormal basis vector û
-    u_norm = torch.norm(u, dim=-1, keepdim=True)  # [batch, 1, 1]
-    u_hat = u / (u_norm + eps)  # [batch, 1, d]
-
-    # 5. Handle degenerate case
-    is_degenerate = (u_norm.squeeze(-1) < eps)  # [batch, 1]
-
-    # 6. Rotate in the h-v plane
+    # 3. Handle alpha broadcasting and clamping [0, 1]
     if isinstance(alpha, torch.Tensor):
-        # Dynamically append dimensions so it broadcasts with h
-        alpha_b = alpha
+        alpha_b = alpha.float()
         while alpha_b.dim() < h.dim():
             alpha_b = alpha_b.unsqueeze(-1)
-        cos_a = torch.cos(alpha_b)
-        sin_a = torch.sin(alpha_b)
     else:
-        # Scalar handling (e.g. Continuous mode fixed alpha)
-        cos_a = math.cos(alpha)
-        sin_a = math.sin(alpha)
+        alpha_b = torch.tensor(alpha, dtype=torch.float32, device=h.device)
+    
+    # 物理意义修正：alpha 现在是 0~1 的插值比例
+    t = torch.clamp(alpha_b, 0.0, 1.0)
 
-    h_hat_rotated = cos_a * h_hat + sin_a * u_hat  # [batch, 1, d]
+    # 4. Compute new angle (shrink the gap by proportion t)
+    # If t=0.3, theta_new is 70% of original theta (moved 30% closer)
+    theta_new = (1.0 - t) * theta
+
+    # 5. Spherical interpolation (SLERP orthogonal basis)
+    sin_theta = torch.sin(theta).clamp_min(eps)
+    u = (h_hat - cos_theta * v) / sin_theta  # Orthogonal component
+
+    # 6. Construct new vector using target v and orthogonal u
+    h_hat_rotated = torch.cos(theta_new) * v + torch.sin(theta_new) * u
 
     # 7. Restore original norm
-    h_new = h_norm * h_hat_rotated  # [batch, 1, d]
+    h_new = h_norm * h_hat_rotated
 
-    # 8. Handle degenerate cases by reverting to original h
-    if is_degenerate.any():
-        mask = is_degenerate.unsqueeze(-1).expand_as(h)
+    # 8. Handle edge cases (if h and v are already perfectly aligned)
+    is_aligned = (theta < eps)
+    if is_aligned.any():
+        mask = is_aligned.expand_as(h)
         h_new = torch.where(mask, h, h_new)
 
-    # Note: If alpha == 0, the equation cleanly yields:
-    # cos(0)*h_hat + sin(0)*u_hat = h_hat.
-    # h_norm * h_hat = h.
-    # So we don't strictly need a special mask for alpha == 0,
-    # though we could add one for micro-optimization of exact precision match.
-
-    return h_new
-
+    return h_new.to(orig_dtype)
 
 def create_steering_hook(
     state,
