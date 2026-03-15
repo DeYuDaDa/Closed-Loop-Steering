@@ -28,7 +28,7 @@ CONVERGENCE_MARGIN_TAU = 0.25  # Margin threshold for convergence detection
 PID_KP = 2.0                  # Proportional gain 0.6
 PID_KI = 0                  # Integral gain
 PID_KD = 0.5                 # Derivative gain
-ALPHA_MAX = 0.1              # Maximum rotation angle (radians), ~17 degrees
+ALPHA_MAX = 0.45              # Maximum rotation angle (radians), ~17 degrees
 
 # ======================== Manifold Projection ========================
 PCA_N_COMPONENTS = 10         # Number of principal components to retain
@@ -41,7 +41,7 @@ DEFAULT_DTR_LAYER = 16        # Default layer for DTR replay analysis
 CONTEXT_WINDOW_LIMIT = 4096   # Safety limit for internal model forward passes (PPL etc)
 
 # ======================== Spherical Steering ========================
-CONTINUOUS_ALPHA = 0.1       # Default rotation angle for Continuous mode
+CONTINUOUS_ALPHA = 0.45       # Default rotation angle for Continuous mode
 CAPTURE_HIDDEN_STATES = False  # Whether to log all hidden states during hook (memory intensive)
 
 # ======================== Vector Paths ========================
@@ -51,13 +51,13 @@ VECTOR_DIR = "./vectors/qwen3-8b"
 DO_SAMPLE = True
 TEMPERATURE = 0.7
 TOP_P = 0.95
-MAX_NEW_TOKENS = 2048
+MAX_NEW_TOKENS = 4096
 ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 
 # ======================== Experiment ========================
 # EXPERIMENT_MODES = ["Baseline", "Continuous", "Dynamic_Spherical"]
-EXPERIMENT_MODES = ["Dynamic_Spherical"]
+EXPERIMENT_MODES = ["Continuous", "Dynamic_Spherical"]
 
 RESULTS_DIR = "./results"
 RESULTS_TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
@@ -68,5 +68,5 @@ REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
 
 # ======================== AIME Benchmark ========================
 DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
-AIME_MAX_TOKENS = 2048        # Extended token budget for math reasoning
+AIME_MAX_TOKENS = 4096        # Extended token budget for math reasoning
 BATCH_SIZE = 16                # Batch size for Baseline / Continuous modes
