@@ -194,8 +194,8 @@ def main():
     # Optional: trigger evaluation visualizer
     print(f"📊 Generating final graphs...")
     from evaluation_visualizer import PlotVisualizer
-    viz = PlotVisualizer()
-    viz.generate_comprehensive_report(results_data)
+    viz = PlotVisualizer(os.path.dirname(args.results))
+    viz.run()
 
 
 if __name__ == "__main__":
