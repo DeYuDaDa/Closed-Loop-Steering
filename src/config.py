@@ -27,7 +27,7 @@ CONVERGENCE_MARGIN_TAU = 0.25  # Margin threshold for convergence detection
 PID_KP = 1.0                  # Proportional gain 0.6
 PID_KI = 0.1                  # Integral gain
 PID_KD = 0.05                 # Derivative gain
-ALPHA_MAX = 1.5              # Maximum rotation angle (radians), ~17 degrees
+ALPHA_MAX = 0.3              # Maximum rotation angle (radians), ~17 degrees
 
 # ======================== Manifold Projection ========================
 PCA_N_COMPONENTS = 10         # Number of principal components to retain

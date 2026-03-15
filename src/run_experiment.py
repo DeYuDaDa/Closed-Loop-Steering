@@ -196,12 +196,32 @@ def run_batched_generation(
 
         # Protection against fp16/bf16 left-padding NaN generation bugs (FlashAttention)
         class InfNanProtectionProcessor:
+            def __init__(self, eos_id):
+                self.eos_id = eos_id if isinstance(eos_id, int) else (eos_id[0] if isinstance(eos_id, list) else 0)
+
             def __call__(self, input_ids, scores):
-                if torch.isnan(scores).any() or torch.isinf(scores).any():
-                    scores = torch.nan_to_num(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
+                # Replace NaNs/Infs in the logits to prevent PyTorch multinomial crash
+                # Replace NaNs with a very negative value so they are safely ignored by softmax
+                torch.nan_to_num_(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
+                
+                # Check for COMPLETE sequence collapse (i.e. all valid logits became strongly negative)
+                max_scores, _ = scores.max(dim=-1)
+                collapsed_mask = max_scores <= (-SAFE_SCORE_RANGE + 1.0)
+                
+                if collapsed_mask.any():
+                    # Record warnings
+                    collapsed_indices = collapsed_mask.nonzero(as_tuple=True)[0].tolist()
+                    seq_len = input_ids.shape[1]
+                    for idx in collapsed_indices:
+                        print(f"  [Warning] 🚨 Sequence {idx} mathematically collapsed at length {seq_len} (NaN generated). Forcing EOS.")
+                    
+                    # Force fully corrupted sequences to generate EOS safely instead of uniformly sampling from padding
+                    scores[collapsed_mask, :] = -SAFE_SCORE_RANGE
+                    scores[collapsed_mask, self.eos_id] = SAFE_SCORE_RANGE
+                    
                 return scores
 
-        processors.append(InfNanProtectionProcessor())
+        processors.append(InfNanProtectionProcessor(tokenizer.eos_token_id)) # Using eos_token_id to terminate safely
         
         if mode == "Continuous":
             state.intervention_active.fill_(True)
@@ -223,20 +243,22 @@ def run_batched_generation(
             # Since generation doesn't expose sequence completion easily, we add a
             # quick custom logits processor that examines input_ids to update the active_mask
             class ActiveMaskProcessor:
-                def __init__(self, state, tokenizer, input_lens):
+                def __init__(self, state, tokenizer, initial_seq_len):
                     self.state = state
                     self.eos_id = tokenizer.eos_token_id
-                    self.input_lens = input_lens
+                    if isinstance(self.eos_id, list): self.eos_id = self.eos_id[0]
+                    self.initial_seq_len = initial_seq_len
                     
                 def __call__(self, input_ids, scores):
                     if self.eos_id is not None:
-                        for i in range(self.state.batch_size):
-                            gen_part = input_ids[i, self.input_lens[i]:]
-                            has_eos = (gen_part == self.eos_id).any()
-                            self.state.active_mask[i] = ~has_eos
+                        # Slice from initial_seq_len instead of input_lens to only check newly generated tokens
+                        if input_ids.shape[1] > self.initial_seq_len:
+                            gen_part = input_ids[:, self.initial_seq_len:]
+                            has_eos = (gen_part == self.eos_id).any(dim=1)
+                            self.state.active_mask = ~has_eos
                     return scores
             
-            processors.append(ActiveMaskProcessor(state, tokenizer, input_lens))
+            processors.append(ActiveMaskProcessor(state, tokenizer, initial_seq_len))
             processors.append(monitor)
 
         # Steering hook 

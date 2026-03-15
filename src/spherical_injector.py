@@ -71,7 +71,14 @@ def spherical_rotate(
 
     # 5. Spherical interpolation (SLERP orthogonal basis)
     sin_theta = torch.sin(theta).clamp_min(eps)
-    u = (h_hat - cos_theta * v) / sin_theta  # Orthogonal component
+    
+    # Prevent explosion if highly collinear
+    is_collinear = sin_theta < 1e-5
+    u = torch.where(
+        is_collinear.expand_as(h_hat), 
+        torch.zeros_like(h_hat), 
+        (h_hat - cos_theta * v) / sin_theta
+    )
 
     # 6. Construct new vector using target v and orthogonal u
     h_hat_rotated = torch.cos(theta_new) * v + torch.sin(theta_new) * u
