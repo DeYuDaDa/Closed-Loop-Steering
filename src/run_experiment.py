@@ -177,17 +177,34 @@ def run_batched_generation(
         batch_prompts = prompts[batch_start:batch_start + batch_size]
         actual_bs = len(batch_prompts)
 
-        # Tokenize with left-padding to keep alignments simple
+        encoded_list = []
+        for prompt_msgs in batch_prompts:
+            if isinstance(prompt_msgs, (list, dict)):
+                # Apply chat template properly to avoid token shredded strings
+                ids = tokenizer.apply_chat_template(
+                    prompt_msgs, 
+                    add_generation_prompt=True, 
+                    tokenize=True
+                )
+                # Add <think>\n manually
+                think_ids = tokenizer.encode("<think>\n", add_special_tokens=False)
+                ids.extend(think_ids)
+            else:
+                ids = tokenizer.encode(prompt_msgs, add_special_tokens=False)
+            encoded_list.append(torch.tensor(ids))
+
+        # Tokenize with left-padding
         tokenizer.padding_side = 'left'
-        inputs = tokenizer(
-            batch_prompts,
-            return_tensors="pt",
+        inputs = tokenizer.pad(
+            {"input_ids": encoded_list},
             padding=True,
-            truncation=True,
+            return_tensors="pt",
         ).to(model.device)
         
         # Reset to right padding just in case it's assumed elsewhere
         tokenizer.padding_side = 'right'
+
+        initial_seq_len = inputs.input_ids.shape[1]
 
         # Initialize batched state
         state = InjectionState(batch_size=actual_bs, device=model.device)
