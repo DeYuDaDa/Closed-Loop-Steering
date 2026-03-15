@@ -14,7 +14,7 @@ DEVICE_MAP = "auto"           # Options: "auto", "cuda:0", "cpu"
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,garbage_collection_threshold:0.7"
 
 # ======================== TECA (State Monitor) ========================
-TECA_THRESHOLD = 0.15          # SetPoint: TECA above this triggers intervention
+TECA_THRESHOLD = 0.05          # SetPoint: TECA above this triggers intervention
 TECA_TEMPERATURE = 1.0        # Softmax temperature for entropy calculation
 TECA_EPSILON = 1e-9           # Numerical stability for log
 MATH_EPSILON = 1e-6           # Generic epsilon for geometry/clamping
@@ -24,10 +24,10 @@ CONVERGENCE_MARGIN_TAU = 0.25  # Margin threshold for convergence detection
 # The token id of </think> — will be resolved at runtime from the tokenizer
 
 # ======================== PID Controller ========================
-PID_KP = 1.0                  # Proportional gain 0.6
-PID_KI = 0.1                  # Integral gain
-PID_KD = 0.05                 # Derivative gain
-ALPHA_MAX = 0.3              # Maximum rotation angle (radians), ~17 degrees
+PID_KP = 2.0                  # Proportional gain 0.6
+PID_KI = 1.0                  # Integral gain
+PID_KD = 0.5                 # Derivative gain
+ALPHA_MAX = 0.6              # Maximum rotation angle (radians), ~17 degrees
 
 # ======================== Manifold Projection ========================
 PCA_N_COMPONENTS = 10         # Number of principal components to retain
@@ -37,10 +37,10 @@ DTR_G = 0.5                   # JSD convergence threshold
 DTR_RHO = 0.85                # Deep-thinking layer fraction
 DTR_CHUNK_SIZE = 256          # Processing chunk size to save VRAM
 DEFAULT_DTR_LAYER = 16        # Default layer for DTR replay analysis
-CONTEXT_WINDOW_LIMIT = 8192   # Safety limit for internal model forward passes (PPL etc)
+CONTEXT_WINDOW_LIMIT = 4096   # Safety limit for internal model forward passes (PPL etc)
 
 # ======================== Spherical Steering ========================
-CONTINUOUS_ALPHA = 0.15       # Default rotation angle for Continuous mode
+CONTINUOUS_ALPHA = 0.6       # Default rotation angle for Continuous mode
 CAPTURE_HIDDEN_STATES = False  # Whether to log all hidden states during hook (memory intensive)
 
 # ======================== Vector Paths ========================

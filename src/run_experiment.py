@@ -177,31 +177,25 @@ def run_batched_generation(
         batch_prompts = prompts[batch_start:batch_start + batch_size]
         actual_bs = len(batch_prompts)
 
-        encoded_list = []
-        for prompt_msgs in batch_prompts:
-            if isinstance(prompt_msgs, (list, dict)):
-                # Apply chat template properly to avoid token shredded strings
-                ids = tokenizer.apply_chat_template(
-                    prompt_msgs, 
-                    add_generation_prompt=True, 
-                    tokenize=True
-                )
-                # Add <think>\n manually
-                think_ids = tokenizer.encode("<think>\n", add_special_tokens=False)
-                ids.extend(think_ids)
+        formatted_prompts = []
+        for p in batch_prompts:
+            if isinstance(p, (list, dict)):
+                # Qwen's template already ends with assistant\n when add_generation_prompt=True
+                # Fast tokenizer will handle special tokens correctly from the string
+                text = tokenizer.apply_chat_template(p, tokenize=False, add_generation_prompt=True)
+                formatted_prompts.append(text)
             else:
-                ids = tokenizer.encode(prompt_msgs, add_special_tokens=False)
-            encoded_list.append(torch.tensor(ids))
+                formatted_prompts.append(p)
 
-        # Tokenize with left-padding
+        # High-performance fast tokenizer call (strings -> tensors with padding)
         tokenizer.padding_side = 'left'
-        inputs = tokenizer.pad(
-            {"input_ids": encoded_list},
+        inputs = tokenizer(
+            formatted_prompts,
             padding=True,
             return_tensors="pt",
         ).to(model.device)
         
-        # Reset to right padding just in case it's assumed elsewhere
+        # Reset to right padding
         tokenizer.padding_side = 'right'
 
         initial_seq_len = inputs.input_ids.shape[1]
