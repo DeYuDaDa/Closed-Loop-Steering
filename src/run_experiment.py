@@ -692,9 +692,9 @@ def main():
         json.dump(serializable_results, f, indent=JSON_INDENT, ensure_ascii=False)
     print(f"\n📊 Raw results saved to {results_path}")
 
-    # ---- Generate visualization ----
-    visualizer = PlotVisualizer(save_dir=results_subdir)
-    visualizer.generate_comprehensive_report(experiment_results)
+    # # ---- Generate visualization ---- # 不再自动化生成图片
+    # visualizer = PlotVisualizer(save_dir=results_subdir)
+    # visualizer.generate_comprehensive_report(experiment_results)
 
     # ---- Print final report ----
     print(f"\n{'='*60}")

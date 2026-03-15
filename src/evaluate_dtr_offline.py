@@ -16,7 +16,15 @@ import argparse
 import os
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from config import MODEL_PATH, LAYER_ID, VECTOR_DIR
+from config import (
+    MODEL_PATH, 
+    LAYER_ID, 
+    VECTOR_DIR, 
+    CONTINUOUS_ALPHA, 
+    DEFAULT_DTYPE,
+    DTR_G,
+    DTR_RHO,
+)
 from dtr_utils import DTRCalculator, calculate_ppl
 from run_experiment import load_control_vector
 
@@ -54,9 +62,10 @@ def main():
     results_data = load_json_results(args.results)
 
     # 1. Load Model
-    print(f"🔧 Loading model from {MODEL_PATH}...")
+    model_dtype = getattr(torch, DEFAULT_DTYPE)
+    print(f"🔧 Loading model from {MODEL_PATH} ({DEFAULT_DTYPE})...")
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH, torch_dtype=torch.bfloat16, device_map="auto"
+        MODEL_PATH, torch_dtype=model_dtype, device_map="auto"
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     # Ensure pad token differs from eos_token (same fix as run_experiment.py)
@@ -69,10 +78,10 @@ def main():
     control_vector = load_control_vector(
         VECTOR_DIR,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        dtype=torch.bfloat16,
+        dtype=model_dtype,
     )
 
-    dtr_calc = DTRCalculator(model)
+    dtr_calc = DTRCalculator(model, g=DTR_G, rho=DTR_RHO)
 
     # 3. Process each mode
     for mode, mode_data in results_data.items():
@@ -111,12 +120,11 @@ def main():
                 ppl = float("nan")
 
             # Intervention Replay Args
-            alpha_traj = None
-            if mode == "Continuous":
-                # Continuous mode alpha was always 0.15 for generated tokens
-                alpha_traj = [0.15] * (output_ids_gpu.shape[1] - input_len)
-            elif mode == "Dynamic_Spherical":
-                alpha_traj = prob.get("alpha_trajectory", [])
+            alpha_traj = prob.get("alpha_trajectory", [])
+            
+            # If Continuous mode has no saved trajectory, reconstruct it from config
+            if mode == "Continuous" and not alpha_traj:
+                alpha_traj = [CONTINUOUS_ALPHA] * (output_ids_gpu.shape[1] - input_len)
 
             replay_args = {
                 "control_vector": control_vector if mode in ("Continuous", "Dynamic_Spherical") else None,

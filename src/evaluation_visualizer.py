@@ -1,341 +1,187 @@
 """
-Evaluation & Visualization Module
-====================================
-Generates publication-quality 2×2 figure panels for the paper:
-  1. Accuracy Comparison (Grouped Bar Chart)
-  2. TECA + Intervention Trajectory (Dual-axis Line Plot)
-  3. Language Stability — Repetition Rate (Bar Chart)
-  4. Reasoning Efficiency — Tokens vs. Accuracy (Scatter Plot)
+Standalone Evaluation & Visualization Module
+=============================================
+手动运行此脚本以生成可视化报告，避免污染 Git 仓库。
 
-Also generates a formatted statistical summary table.
+用法:
+  python evaluation_visualizer.py --result ./results/MATH500_20260315_xxxxx
 """
 
-import matplotlib.pyplot as plt
-import matplotlib
-import seaborn as sns
-import numpy as np
 import os
+import json
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib
 
-from config import RESULTS_DIR
-
-# Use non-interactive backend for server environments
+# 使用非交互式后端，适合服务器环境
 matplotlib.use("Agg")
+
+try:
+    from config import ENTROPY_THRESHOLD, ALPHA_MAX
+except ImportError:
+    ENTROPY_THRESHOLD = 0.15
+    ALPHA_MAX = 0.5
 
 
 class PlotVisualizer:
-    """
-    Generates publication-quality evaluation plots (ICLR/NeurIPS style).
-    """
-
-    # Color palette
     COLORS = {
-        "Baseline": "#8C8C8C",           # Grey
-        "Continuous": "#E07B54",          # Coral/Red
-        "Dynamic_Spherical": "#4A90D9",  # Blue
+        "Baseline": "#8C8C8C",           # 灰色
+        "Continuous": "#E07B54",         # 珊瑚红
+        "Dynamic_Spherical": "#4A90D9",  # 科技蓝
     }
-    COLOR_LIST = ["#8C8C8C", "#E07B54", "#4A90D9"]
 
-    def __init__(self, save_dir: str = RESULTS_DIR):
-        self.save_dir = save_dir
-        os.makedirs(save_dir, exist_ok=True)
+    def __init__(self, result: str):
+        self.result = result
+        self.json_path = os.path.join(result, "experiment_results.json")
+        if not os.path.exists(self.json_path):
+            raise FileNotFoundError(f"找不到结果文件: {self.json_path}")
+        
+        with open(self.json_path, "r", encoding="utf-8") as f:
+            self.results = json.load(f)
 
-        # Paper style
+        # 设置论文级别的图表样式
+        sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
         plt.rcParams.update({
             "font.family": "serif",
-            "font.size": 11,
+            "axes.titlesize": 14,
             "axes.labelsize": 12,
-            "axes.titlesize": 13,
             "xtick.labelsize": 10,
             "ytick.labelsize": 10,
-            "legend.fontsize": 9,
-            "figure.dpi": 150,
         })
-        sns.set_theme(style="whitegrid", context="paper", font_scale=1.1)
 
-    def generate_comprehensive_report(self, experiment_results: dict):
-        """
-        Generate the full 2×2 evaluation figure.
+    def run(self):
+        """执行所有可视化流水线"""
+        print(f"📊 正在处理结果目录: {self.result}")
+        self._plot_global_metrics()
+        self._plot_intervention_dynamics()
+        print(f"✅ 所有可视化图片已保存至: {self.result}")
 
-        Args:
-            experiment_results: Dict of dicts, keyed by mode name.
-                Each mode dict should contain:
-                    - accuracy: float (0-1)
-                    - repetition: float (0-1)
-                    - ppl: float
-                    - tokens: int (total generated tokens)
-                    - local_dtr: float (0-1)
-                    - teca_trajectory: list[float]
-                    - alpha_trajectory: list[float]
-        """
+    def _plot_global_metrics(self):
+        """绘制全局核心指标（Accuracy, Repetition, Tokens, DTR）柱状图"""
+        modes = list(self.results.keys())
+        metrics = ["accuracy", "repetition", "tokens", "local_dtr"]
+        titles = ["1. Accuracy (Higher is better)", 
+                  "2. Repetition Rate (Lower is better)", 
+                  "3. Avg Tokens (Efficiency)", 
+                  "4. Local DTR (Depth)"]
+        
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes = axes.flatten()
 
-        # 1. Accuracy (top-left)
-        self._plot_accuracy(axes[0, 0], experiment_results)
+        for i, metric in enumerate(metrics):
+            ax = axes[i]
+            # 提取数据，处理可能的 NaN
+            vals = []
+            for m in modes:
+                val = self.results[m].get(metric, 0)
+                if val is None or np.isnan(val): val = 0
+                # Repetition 转换为百分比
+                if metric == "repetition": val *= 100
+                vals.append(val)
+            
+            colors = [self.COLORS.get(m, "#333333") for m in modes]
+            bars = ax.bar(modes, vals, color=colors, width=0.6)
+            ax.set_title(titles[i], fontweight='bold', pad=15)
+            
+            # Repetition 的安全线
+            if metric == "repetition":
+                ax.axhline(5.0, color='green', linestyle=':', label="Safe (<5%)")
+                ax.set_ylabel("Percentage (%)")
+                ax.legend()
+            
+            # 添加数据标签
+            for bar in bars:
+                height = bar.get_height()
+                label = f"{height:.2f}" if isinstance(height, float) else f"{int(height)}"
+                ax.annotate(label, xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 5), textcoords="offset points", ha='center', va='bottom')
+            
+            # 优化 X 轴
+            ax.set_xticks(range(len(modes)))
+            ax.set_xticklabels(modes, rotation=15 if len(modes)>3 else 0)
 
-        # 2. TECA + Alpha trajectory (top-right)
-        self._plot_teca_trajectory(axes[0, 1], experiment_results)
-
-        # 3. Language stability (bottom-left)
-        self._plot_stability(axes[1, 0], experiment_results)
-
-        # 4. Reasoning efficiency (bottom-right)
-        self._plot_efficiency(axes[1, 1], experiment_results)
-
-        plt.tight_layout(pad=2.0)
-
-        save_path = os.path.join(self.save_dir, "intervention_evaluation_matrix.png")
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        plt.savefig(
-            save_path.replace(".png", ".pdf"), bbox_inches="tight"
-        )  # Also save PDF for LaTeX
+        plt.tight_layout()
+        save_path = os.path.join(self.result, "global_metrics.png")
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
 
-        print(f"✅ Evaluation figure saved to {save_path}")
-        print(f"✅ PDF version saved to {save_path.replace('.png', '.pdf')}")
-
-        # Print statistical summary
-        self._print_summary_table(experiment_results)
-
-    def _plot_accuracy(self, ax, results: dict):
-        """Plot 1: Logical Accuracy comparison bar chart."""
-        modes = list(results.keys())
-        accs = [results[m]["accuracy"] for m in modes]
-
-        bars = ax.bar(
-            modes, accs,
-            color=[self.COLORS.get(m, "#999999") for m in modes],
-            edgecolor="black",
-            linewidth=0.8,
-        )
-        ax.set_ylim(0, 1.15)
-        ax.set_title("(a) AIME Pass@1 Accuracy", fontweight="bold")
-        ax.set_ylabel("Accuracy")
-
-        # Data labels
-        for bar in bars:
-            height = bar.get_height()
-            ax.annotate(
-                f"{height:.2f}",
-                xy=(bar.get_x() + bar.get_width() / 2, height),
-                xytext=(0, 4),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontweight="bold",
-            )
-
-        # Beautify x-tick labels
-        ax.set_xticklabels(
-            [m.replace("_", "\n") for m in modes], fontsize=9
-        )
-
-    def _plot_teca_trajectory(self, ax, results: dict):
-        """
-        Plot 2: TECA and intervention strength α trajectory.
-        Shows data from the Dynamic_Spherical experiment.
-        """
-        # Use Dynamic_Spherical data for the trajectory
-        ds_key = "Dynamic_Spherical"
-        if ds_key not in results:
-            ax.text(0.5, 0.5, "No Dynamic_Spherical data", transform=ax.transAxes,
-                    ha="center", va="center")
+    def _plot_intervention_dynamics(self):
+        """提取触发干预的典型样本，绘制高解释性的 EMA 熵与 Alpha 双轴动力学曲线"""
+        if "Dynamic_Spherical" not in self.results:
+            return
+            
+        ds_data = self.results["Dynamic_Spherical"]
+        if "ema_trajectory" not in ds_data or "alpha_trajectory" not in ds_data:
+            print("⚠️ 未找到 ema_trajectory 或 alpha_trajectory，跳过动力学曲线绘制。")
             return
 
-        ds = results[ds_key]
-        teca = ds.get("teca_trajectory", [])
-        alpha = ds.get("alpha_trajectory", [])
+        ema_trajs = ds_data["ema_trajectory"]
+        alpha_trajs = ds_data["alpha_trajectory"]
 
-        if not teca:
-            ax.text(0.5, 0.5, "No trajectory data", transform=ax.transAxes,
-                    ha="center", va="center")
+        # 寻找真正触发了干预的样本 (Alpha > 0)
+        triggered_indices = []
+        for i, alpha_t in enumerate(alpha_trajs):
+            if max(alpha_t) > 0.05:  # 只有最大干预强度超过 0.05 才值得画
+                triggered_indices.append(i)
+
+        if not triggered_indices:
+            print("ℹ️ 本次实验中没有样本触发显著干预 (Alpha均接近0)，跳过动力学绘图。")
             return
 
-        steps = np.arange(len(teca))
+        # 最多只画前 2 个典型样本，避免图表过长
+        samples_to_plot = triggered_indices[:2]
+        fig, axes = plt.subplots(len(samples_to_plot), 1, figsize=(12, 5 * len(samples_to_plot)))
+        if len(samples_to_plot) == 1:
+            axes = [axes]
 
-        # TECA line (left Y-axis)
-        color_teca = "#2166AC"
-        ax.plot(steps, teca, label="TECA", color=color_teca, linewidth=2, alpha=0.9)
-        ax.set_ylabel("TECA (Entropy)", color=color_teca)
-        ax.tick_params(axis="y", labelcolor=color_teca)
-        ax.set_xlabel("Generation Step (Tokens)")
+        for idx, ax in zip(samples_to_plot, axes):
+            ema = np.array(ema_trajs[idx])
+            alpha = np.array(alpha_trajs[idx])
+            steps = np.arange(len(ema))
 
-        # Threshold line
-        from config import TECA_THRESHOLD
-        ax.axhline(
-            y=TECA_THRESHOLD, color="green", linestyle=":", linewidth=1,
-            label=f"Threshold ({TECA_THRESHOLD})", alpha=0.7,
-        )
+            # 主 Y 轴：绘制 EMA 熵
+            ax.plot(steps, ema, color='#1f77b4', linewidth=2.5, label='EMA Entropy')
+            ax.axhline(ENTROPY_THRESHOLD, color='black', linestyle='--', alpha=0.7, label=f'Threshold ({ENTROPY_THRESHOLD})')
+            ax.set_ylabel('EMA Entropy', color='#1f77b4', fontweight='bold')
+            ax.tick_params(axis='y', labelcolor='#1f77b4')
+            ax.set_xlabel('Generation Step (Tokens)')
+            
+            # 寻找 ThinkBrake 收敛瞬间（EMA 未降，但 Alpha 强行归零）
+            # 简单启发式：如果 Alpha 突然变 0 但 EMA 还在高位，画一条垂线
+            if len(alpha) > 5:
+                for t in range(1, len(alpha)):
+                    if alpha[t-1] > 0.05 and alpha[t] == 0 and ema[t] > ENTROPY_THRESHOLD:
+                        ax.axvline(t, color='green', linestyle=':', linewidth=2, label='ThinkBrake Cutoff')
+                        break
 
-        # Alpha line (right Y-axis)
-        if alpha:
+            # 次 Y 轴：绘制干预强度 Alpha
             ax2 = ax.twinx()
-            color_alpha = "#B2182B"
-            ax2.plot(steps[:len(alpha)], alpha, label="α (Intervention)",
-                     color=color_alpha, linestyle="--", linewidth=2, alpha=0.8)
-            ax2.fill_between(
-                steps[:len(alpha)], 0, alpha, color=color_alpha, alpha=0.08
-            )
-            ax2.set_ylabel("Rotation Angle α", color=color_alpha)
-            ax2.tick_params(axis="y", labelcolor=color_alpha)
+            ax2.plot(steps, alpha, color='#d62728', linewidth=2, linestyle='-', label='Alpha (Steering Strength)')
+            ax2.fill_between(steps, 0, alpha, color='#d62728', alpha=0.15)
+            ax2.set_ylabel('Alpha', color='#d62728', fontweight='bold')
+            ax2.tick_params(axis='y', labelcolor='#d62728')
+            ax2.set_ylim(0, max(ALPHA_MAX * 1.2, max(alpha) * 1.2))
 
-        ax.set_title("(b) Entropy Drop & Intervention Trajectory", fontweight="bold")
+            # 合并图例
+            lines_1, labels_1 = ax.get_legend_handles_labels()
+            lines_2, labels_2 = ax2.get_legend_handles_labels()
+            ax.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right', framealpha=0.9)
+            
+            ax.set_title(f"Intervention Dynamics (Prompt Index: {idx})", fontweight='bold')
+            ax.grid(True, alpha=0.3)
 
-        # Combined legend
-        lines1, labels1 = ax.get_legend_handles_labels()
-        if alpha:
-            lines2, labels2 = ax2.get_legend_handles_labels()
-            ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8)
-        else:
-            ax.legend(loc="upper right", fontsize=8)
-
-    def _plot_stability(self, ax, results: dict):
-        """Plot 3: Language stability — Repetition Rate comparison."""
-        modes = list(results.keys())
-        reps = [results[m].get("repetition", 0) * 100 for m in modes]
-
-        bars = ax.bar(
-            modes, reps,
-            color=[self.COLORS.get(m, "#999999") for m in modes],
-            edgecolor="black",
-            linewidth=0.8,
-        )
-        ax.set_title("(c) Language Stability (Repetition Rate)", fontweight="bold")
-        ax.set_ylabel("N-gram Repetition Rate (%)")
-
-        # Safety threshold line
-        ax.axhline(
-            y=5.0, color="green", linestyle=":", linewidth=1.5,
-            label="Safe Threshold (<5%)", alpha=0.8,
-        )
-        ax.legend(loc="upper right", fontsize=8)
-
-        # Data labels
-        for bar in bars:
-            height = bar.get_height()
-            ax.annotate(
-                f"{height:.1f}%",
-                xy=(bar.get_x() + bar.get_width() / 2, height),
-                xytext=(0, 4),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
-
-        ax.set_xticklabels(
-            [m.replace("_", "\n") for m in modes], fontsize=9
-        )
-
-    def _plot_efficiency(self, ax, results: dict):
-        """Plot 4: Reasoning efficiency — Tokens consumed vs. Accuracy."""
-        modes = list(results.keys())
-        tokens = [results[m].get("tokens", 0) for m in modes]
-        accs = [results[m].get("accuracy", 0) for m in modes]
-
-        for i, mode in enumerate(modes):
-            local_dtr = results[mode].get("local_dtr", 0.5)
-            marker_size = max(80, local_dtr * 500)  # Scale marker by DTR
-            color = self.COLORS.get(mode, "#999999")
-
-            ax.scatter(
-                tokens[i], accs[i],
-                s=marker_size,
-                color=color,
-                label=f"{mode} (DTR={local_dtr:.2f})",
-                alpha=0.8,
-                edgecolors="black",
-                linewidths=0.8,
-                zorder=5,
-            )
-            # Annotate
-            ax.annotate(
-                mode.replace("_", "\n"),
-                (tokens[i], accs[i]),
-                textcoords="offset points",
-                xytext=(10, 5),
-                fontsize=8,
-                alpha=0.8,
-            )
-
-        ax.set_title("(d) Reasoning Efficiency", fontweight="bold")
-        ax.set_xlabel("Total Consumed Tokens")
-        ax.set_ylabel("Accuracy")
-
-        # Mean token line
-        if tokens:
-            ax.axvline(
-                x=np.mean(tokens), color="grey", linestyle="--",
-                alpha=0.3, label="Avg Token Count",
-            )
-
-        ax.legend(loc="best", fontsize=8)
-
-        # Annotate ideal region
-        ax.annotate(
-            "Ideal: ↑ Accuracy\n↓ Tokens",
-            xy=(0.05, 0.95),
-            xycoords="axes fraction",
-            fontsize=8,
-            color="green",
-            alpha=0.6,
-            style="italic",
-        )
-
-    def _print_summary_table(self, results: dict):
-        """Print a formatted statistical summary table to stdout."""
-        print("\n" + "=" * 80)
-        print(f"{'EVALUATION SUMMARY':^80}")
-        print("=" * 80)
-        print(
-            f"{'Mode':<22} {'Acc':>7} {'Rep%':>7} {'PPL':>8} "
-            f"{'Tokens':>7} {'DTR':>7}"
-        )
-        print("-" * 80)
-
-        for mode, data in results.items():
-            acc = data.get("accuracy", 0)
-            rep = data.get("repetition", 0) * 100
-            ppl = data.get("ppl", float("nan"))
-            tokens = data.get("tokens", 0)
-            dtr = data.get("local_dtr", 0)
-
-            print(
-                f"{mode:<22} {acc:>7.2f} {rep:>6.1f}% {ppl:>8.2f} "
-                f"{tokens:>7d} {dtr:>7.2f}"
-            )
-
-        print("=" * 80)
+        plt.tight_layout()
+        save_path = os.path.join(self.result, "intervention_dynamics.png")
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
 
 
-def generate_single_plot(
-    experiment_results: dict,
-    plot_type: str,
-    save_path: str,
-):
-    """
-    Generate a single standalone plot (useful for paper figures).
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="生成实验可视化图表")
+    parser.add_argument("--result", type=str, required=True, help="指向包含 experiment_results.json 的结果目录")
+    args = parser.parse_args()
 
-    Args:
-        experiment_results: Same format as generate_comprehensive_report.
-        plot_type: One of "accuracy", "trajectory", "stability", "efficiency".
-        save_path: Output file path.
-    """
-    viz = PlotVisualizer(save_dir=os.path.dirname(save_path))
-    fig, ax = plt.subplots(figsize=(7, 5))
-
-    plot_map = {
-        "accuracy": viz._plot_accuracy,
-        "trajectory": viz._plot_teca_trajectory,
-        "stability": viz._plot_stability,
-        "efficiency": viz._plot_efficiency,
-    }
-
-    if plot_type not in plot_map:
-        raise ValueError(f"Unknown plot_type: {plot_type}. Choose from {list(plot_map.keys())}")
-
-    plot_map[plot_type](ax, experiment_results)
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"✅ Single plot '{plot_type}' saved to {save_path}")
+    visualizer = PlotVisualizer(args.result)
+    visualizer.run()
