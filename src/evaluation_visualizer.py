@@ -113,32 +113,45 @@ class PlotVisualizer:
             return
             
         ds_data = self.results["Dynamic_Spherical"]
-        if "ema_trajectory" not in ds_data or "alpha_trajectory" not in ds_data:
-            print("⚠️ 未找到 ema_trajectory 或 alpha_trajectory，跳过动力学曲线绘制。")
+        per_problem = ds_data.get("per_problem", [])
+        
+        if not per_problem:
+            print("⚠️ 未找到 per_problem 数据，跳过动力学曲线绘制。")
             return
-
-        ema_trajs = ds_data["ema_trajectory"]
-        alpha_trajs = ds_data["alpha_trajectory"]
 
         # 寻找真正触发了干预的样本 (Alpha > 0)
-        triggered_indices = []
-        for i, alpha_t in enumerate(alpha_trajs):
-            if max(alpha_t) > 0.05:  # 只有最大干预强度超过 0.05 才值得画
-                triggered_indices.append(i)
+        valid_samples = []
+        for i, prob in enumerate(per_problem):
+            alpha = prob.get("alpha_trajectory", [])
+            ema = prob.get("ema_trajectory", [])
+            # 只有当 alpha 有值且最大强度超过 0.05 才有意义
+            if alpha and max(alpha) > 0.05:
+                valid_samples.append({
+                    "idx": i,
+                    "ema": np.array(ema),
+                    "alpha": np.array(alpha)
+                })
 
-        if not triggered_indices:
-            print("ℹ️ 本次实验中没有样本触发显著干预 (Alpha均接近0)，跳过动力学绘图。")
-            return
+        if not valid_samples:
+            # 如果没找到显著干预的，尝试直接拿第一个样本画（如果没有 triggered index）
+            print("ℹ️ 本次实验中没有样本触发显著干预 (Alpha均接近0)，尝试绘制首个样本。")
+            first_prob = per_problem[0]
+            valid_samples.append({
+                "idx": 0,
+                "ema": np.array(first_prob.get("ema_trajectory", [])),
+                "alpha": np.array(first_prob.get("alpha_trajectory", []))
+            })
 
-        # 最多只画前 2 个典型样本，避免图表过长
-        samples_to_plot = triggered_indices[:2]
+        # 最多只画前 2 个典型样本
+        samples_to_plot = valid_samples[:2]
         fig, axes = plt.subplots(len(samples_to_plot), 1, figsize=(12, 5 * len(samples_to_plot)))
         if len(samples_to_plot) == 1:
             axes = [axes]
 
-        for idx, ax in zip(samples_to_plot, axes):
-            ema = np.array(ema_trajs[idx])
-            alpha = np.array(alpha_trajs[idx])
+        for sample, ax in zip(samples_to_plot, axes):
+            idx = sample["idx"]
+            ema = sample["ema"]
+            alpha = sample["alpha"]
             steps = np.arange(len(ema))
 
             # 主 Y 轴：绘制 EMA 熵

@@ -192,10 +192,10 @@ def main():
     save_json_results(results_data, args.results)
     
     # Optional: trigger evaluation visualizer
-    print(f"📊 Generating final graphs...")
-    from evaluation_visualizer import PlotVisualizer
-    viz = PlotVisualizer(os.path.dirname(args.results))
-    viz.run()
+    # print(f"📊 Generating final graphs...")
+    # from evaluation_visualizer import PlotVisualizer
+    # viz = PlotVisualizer(os.path.dirname(args.results))
+    # viz.run()
 
 
 if __name__ == "__main__":
