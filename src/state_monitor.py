@@ -17,7 +17,8 @@ from transformers import LogitsProcessor
 from config import (
     TECA_TEMPERATURE,
     TECA_EPSILON,
-    TECA_THRESHOLD,
+    ENTROPY_THRESHOLD,
+    EMA_BETA,
     CONVERGENCE_MARGIN_TAU,
 )
 
@@ -35,10 +36,9 @@ class InjectionState:
         self.reset()
 
     def reset(self):
-        # --- TECA state (Batched) ---
-        self.entropy_sum: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
+        # --- Entropy State (EMA based) ---
+        self.ema_entropy: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
         self.step_count: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
-        self.teca: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
 
         # --- ThinkBrake state (Batched) ---
         self.margin: torch.Tensor = torch.full((self.batch_size,), float("inf"), device=self.device)
@@ -48,13 +48,13 @@ class InjectionState:
 
         # --- Trajectory logging (Batched) ---
         # List of lists, outer list is per-sequence in the batch
-        self.teca_trajectory: list[list[float]] = [[] for _ in range(self.batch_size)]
+        self.ema_trajectory: list[list[float]] = [[] for _ in range(self.batch_size)]
         self.alpha_trajectory: list[list[float]] = [[] for _ in range(self.batch_size)]
         self.entropy_trajectory: list[list[float]] = [[] for _ in range(self.batch_size)]
 
         # --- Flags (Batched) ---
         self.intervention_active: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-        self.converged: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        self.is_converged: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
         
         # Track whether a sequence is still generating (True) or has hit EOS (False)
         self.active_mask: torch.Tensor = torch.ones(self.batch_size, dtype=torch.bool, device=self.device)
@@ -77,7 +77,8 @@ class StateMonitor(LogitsProcessor):
         term_token_id: int | None = None,
         temperature: float = TECA_TEMPERATURE,
         epsilon: float = TECA_EPSILON,
-        teca_threshold: float = TECA_THRESHOLD,
+        entropy_threshold: float = ENTROPY_THRESHOLD,
+        ema_beta: float = EMA_BETA,
         margin_tau: float = CONVERGENCE_MARGIN_TAU,
     ):
         """
@@ -96,7 +97,8 @@ class StateMonitor(LogitsProcessor):
         self.term_token_id = term_token_id
         self.temperature = temperature
         self.epsilon = epsilon
-        self.teca_threshold = teca_threshold
+        self.entropy_threshold = entropy_threshold
+        self.ema_beta = ema_beta
         self.margin_tau = margin_tau
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -134,21 +136,16 @@ class StateMonitor(LogitsProcessor):
         # A simple heuristic: if a sequence is already converged or we see pad tokens, we could mask. 
         # For our purposes, we'll keep updating state for all sequences that are still active.
         
+        # --- 1. Compute EMA Entropy ---
+        is_first_step = (self.state.step_count == 0)
+        self.state.ema_entropy = torch.where(
+            is_first_step,
+            H_t,
+            self.ema_beta * H_t + (1.0 - self.ema_beta) * self.state.ema_entropy
+        )
+        
         # Update step_count only for active sequences
         self.state.step_count = self.state.step_count + self.state.active_mask.to(torch.float32)
-
-        # Ensure we don't divide by zero
-        safe_steps = torch.clamp(self.state.step_count, min=1.0)
-
-        # Update entropy_sum only for active sequences
-        self.state.entropy_sum = torch.where(
-            self.state.active_mask,
-            self.state.entropy_sum + H_t,
-            self.state.entropy_sum
-        )
-
-        # Compute TECA
-        self.state.teca = self.state.entropy_sum / safe_steps
 
         # --- 2. Compute ThinkBrake Margin M_t (if term token is set) ---
         if self.term_token_id is not None:
@@ -167,14 +164,15 @@ class StateMonitor(LogitsProcessor):
                 self.state.margin
             )
 
-            # Check convergence
-            newly_converged = (self.state.margin <= self.margin_tau) & self.state.active_mask
-            self.state.converged = self.state.converged | newly_converged
+            # Check convergence (ThinkBrake Latch)
+            just_converged = (self.state.margin <= self.margin_tau) & self.state.active_mask
+            self.state.is_converged = self.state.is_converged | just_converged
 
-        # --- 3. Drive PID controller if TECA breaches threshold ---
+        # --- 3. Drive PID controller if EMA entropy breaches threshold ---
         if self.pid is not None:
             # PID controller step now returns a tensor of alphas [batch]
-            alpha = self.pid.step(self.state.teca, self.state.active_mask)
+            # Use ema_entropy instead of teca
+            alpha = self.pid.step(self.state.ema_entropy, self.state.active_mask, self.state.is_converged)
             self.state.alpha = alpha
 
             # Track intervention window (Vectorized):
@@ -185,6 +183,15 @@ class StateMonitor(LogitsProcessor):
             # End: alpha == 0 and was previously active
             just_ended = (alpha <= 0) & self.state.intervention_active & self.state.active_mask
             self.state.intervention_active = self.state.intervention_active & (~just_ended)
+
+            # --- 4. ThinkBrake Hard Cutoff for active_mask ---
+            # If converged, we stop intervention conceptually by masking (or we could just let PID handle it)
+            # In the user request, it says: self.state.active_mask = (self.state.ema_entropy > ENTROPY_THRESHOLD) & (~self.state.is_converged)
+            # Actually, active_mask in HF usually means "sequence is still generating". 
+            # The user request might mean a mask for the INTERVENTION.
+            # Let's adjust active_mask for intervention trigger:
+            intervention_trigger_mask = (self.state.ema_entropy > self.entropy_threshold) & (~self.state.is_converged)
+            # We already passed is_converged to PID, so PID output will be 0 if converged.
 
             # Record step counts into lists
             step_counts_list = self.state.step_count.to(torch.int32).tolist()
@@ -199,16 +206,21 @@ class StateMonitor(LogitsProcessor):
                 elif just_ended[i].item():
                     self.state.intervention_end_step[i] = step_counts_list[i]
 
-        # --- 4. Log trajectories ---
+        # --- 5. Log trajectories ---
         H_t_list = H_t.tolist()
-        teca_list = self.state.teca.tolist()
+        ema_list = self.state.ema_entropy.tolist()
         alpha_list = self.state.alpha.tolist()
         active_list = self.state.active_mask.tolist()
+        converged_list = self.state.is_converged.tolist()
 
         for i in range(batch_size):
             if active_list[i]:
                 self.state.entropy_trajectory[i].append(H_t_list[i])
-                self.state.teca_trajectory[i].append(teca_list[i])
+                # Only record if not converged (or record 0 as requested)
+                if not converged_list[i]:
+                    self.state.ema_trajectory[i].append(ema_list[i])
+                else:
+                    self.state.ema_trajectory[i].append(0.0)
                 self.state.alpha_trajectory[i].append(alpha_list[i])
 
         # Scores pass through unmodified — we only observe, never mutate logits

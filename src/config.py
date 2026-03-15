@@ -13,8 +13,9 @@ DEVICE_MAP = "auto"           # Options: "auto", "cuda:0", "cpu"
 # CUDA Memory Management
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,garbage_collection_threshold:0.7"
 
-# ======================== TECA (State Monitor) ========================
-TECA_THRESHOLD = 0.05          # SetPoint: TECA above this triggers intervention
+# ======================== EMA & State Monitor ========================
+EMA_BETA = 0.1                 # EMA smoothing factor (0.1 = 10% current, 90% history)
+ENTROPY_THRESHOLD = 0.15       # SetPoint: EMA entropy above this triggers intervention
 TECA_TEMPERATURE = 1.0        # Softmax temperature for entropy calculation
 TECA_EPSILON = 1e-9           # Numerical stability for log
 MATH_EPSILON = 1e-6           # Generic epsilon for geometry/clamping

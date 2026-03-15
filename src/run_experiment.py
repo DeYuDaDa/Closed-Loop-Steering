@@ -322,12 +322,12 @@ def run_batched_generation(
             ]
 
             # Extract specific trajectories for this problem
-            teca_traj = state.teca_trajectory[i] if mode != "Baseline" else []
+            ema_traj = state.ema_trajectory[i] if mode != "Baseline" else []
             alpha_traj = state.alpha_trajectory[i] if mode != "Baseline" else []
             entropy_traj = state.entropy_trajectory[i] if mode != "Baseline" else []
             inv_start = state.intervention_start_step[i] if mode != "Baseline" else None
             inv_end = state.intervention_end_step[i] if mode != "Baseline" else None
-            conv = state.converged[i].item() if mode != "Baseline" else False
+            conv = state.is_converged[i].item() if mode != "Baseline" else False
 
             # Convert to plain Python list to sever CUDA references
             all_results.append({
@@ -336,7 +336,7 @@ def run_batched_generation(
                 "num_tokens": len(tokens),
                 "output_ids": output_ids[i].cpu().tolist(),  # plain list[int]
                 "input_len": input_len,
-                "teca_trajectory": teca_traj,
+                "ema_trajectory": ema_traj,
                 "alpha_trajectory": alpha_traj,
                 "entropy_trajectory": entropy_traj,
                 "history_hidden": [],
@@ -427,7 +427,7 @@ def run_full_experiment(
         per_problem_details = []
 
         # Save first problem's trajectory for visualization
-        first_teca_traj = []
+        first_ema_traj = []
         first_alpha_traj = []
 
         for i, (eval_item, result) in enumerate(zip(dataset, results_list)):
@@ -458,7 +458,7 @@ def run_full_experiment(
 
             # Save first trajectory
             if i == 0:
-                first_teca_traj = result["teca_trajectory"]
+                first_ema_traj = result["ema_trajectory"]
                 first_alpha_traj = result["alpha_trajectory"]
 
             status = "✅" if is_correct else "❌"
@@ -482,7 +482,7 @@ def run_full_experiment(
             # Module diagnostics (Dynamic_Spherical: per-problem trajectories)
             if mode == "Dynamic_Spherical":
                 alpha_traj = result["alpha_trajectory"]
-                detail["teca_trajectory"] = result["teca_trajectory"]
+                detail["ema_trajectory"] = result["ema_trajectory"]
                 detail["alpha_trajectory"] = alpha_traj
                 detail["entropy_trajectory"] = result["entropy_trajectory"]
                 detail["intervention_start"] = result["intervention_start"]
@@ -522,7 +522,7 @@ def run_full_experiment(
             "ppl": float("nan"), # Will be calculated offline
             "tokens": avg_tokens,
             "local_dtr": float("nan"), # Will be calculated offline
-            "teca_trajectory": first_teca_traj,
+            "ema_trajectory": first_ema_traj,
             "alpha_trajectory": first_alpha_traj,
             "per_problem": per_problem_details,
         }
@@ -559,8 +559,8 @@ def run_full_experiment(
             m_alpha = diag.get("mean_max_alpha", 0.0)
             p_conv = diag.get("problems_with_convergence", 0)
             print(f"\n  📊 [{mode}] MODULE DIAGNOSTICS:")
-            print(f"    StateMonitor (TECA):     "
-                  f"All {mode_total} problems have TECA trajectories")
+            print(f"    StateMonitor (EMA):      "
+                  f"All {mode_total} problems have EMA trajectories")
             print(f"    PID Controller:          "
                   f"{p_interv}/{mode_total} "
                   f"problems triggered intervention (α>0)")

@@ -22,7 +22,7 @@ Anti-Windup:
 """
 
 import torch
-from config import PID_KP, PID_KI, PID_KD, ALPHA_MAX, TECA_THRESHOLD
+from config import PID_KP, PID_KI, PID_KD, ALPHA_MAX, ENTROPY_THRESHOLD
 
 
 class PIDController:
@@ -30,15 +30,15 @@ class PIDController:
     Discrete PID controller for closed-loop steering, with anti-windup.
     Supports batched multi-sequence processing.
 
-    Input:  TECA_t [batch_size]
-    Output: α_t    [batch_size]
+    Input:  Entropy_t [batch_size]
+    Output: α_t       [batch_size]
     """
 
     def __init__(
         self,
         batch_size: int,
         device: str = "cuda",
-        setpoint: float = TECA_THRESHOLD,
+        setpoint: float = ENTROPY_THRESHOLD,
         kp: float = PID_KP,
         ki: float = PID_KI,
         kd: float = PID_KD,
@@ -56,19 +56,20 @@ class PIDController:
         self.prev_error: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
         self.integral: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
 
-    def step(self, teca: torch.Tensor, active_mask: torch.Tensor) -> torch.Tensor:
+    def step(self, entropy: torch.Tensor, active_mask: torch.Tensor, is_converged: torch.Tensor) -> torch.Tensor:
         """
         Compute one PID step with anti-windup protection for the whole batch.
 
         Args:
-            teca: Current TECA tensor [batch_size].
+            entropy: Current EMA entropy tensor [batch_size].
             active_mask: Boolean tensor [batch_size] defining which sequences are generating.
+            is_converged: Boolean tensor [batch_size] from ThinkBrake convergence latch.
 
         Returns:
             alpha: Rotation angle tensor [batch_size], clamped to [0, alpha_max].
         """
-        # Error: positive when TECA exceeds setpoint (model is confused)
-        error = teca - self.setpoint
+        # Error: positive when entropy exceeds setpoint (model is confused)
+        error = entropy - self.setpoint
 
         # Proportional term
         P = self.kp * error
@@ -84,8 +85,8 @@ class PIDController:
         output_at_lower = (raw_output <= 0.0) & (error < 0)
         saturated = output_at_upper | output_at_lower
         
-        # Only update integral if NOT saturated AND sequence is active
-        update_mask = (~saturated) & active_mask
+        # Only update integral if NOT saturated AND sequence is active AND NOT converged
+        update_mask = (~saturated) & active_mask & (~is_converged)
         
         new_integral_val = self.integral + self.ki * error
         # Clamp integral
@@ -109,6 +110,13 @@ class PIDController:
 
         # Clamp to [0, alpha_max]
         alpha = torch.clamp(alpha, min=0.0, max=self.alpha_max)
+
+        # ThinkBrake Hard Cutoff: if converged, force alpha to 0
+        alpha = torch.where(
+            is_converged,
+            torch.zeros_like(alpha),
+            alpha
+        )
 
         # For inactive sequences, ensure alpha is exactly 0
         alpha = torch.where(active_mask, alpha, torch.zeros_like(alpha))
