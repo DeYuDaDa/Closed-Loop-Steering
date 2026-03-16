@@ -119,18 +119,25 @@ def test_build_prompt():
     print("=" * 60)
 
     problem = "Find the sum of all integer bases $b>9$..."
-    prompt = build_aime_prompt(problem)
+    messages = build_aime_prompt(problem)
 
     # Verify essential components
-    assert "<|im_start|>system" in prompt, "Missing system tag"
-    assert "\\boxed{}" in prompt, "Missing \\boxed{} instruction"
-    assert problem in prompt, "Problem text not in prompt"
-    assert "<|im_start|>assistant" in prompt, "Missing assistant tag"
-    assert "<think>" in prompt, "Missing <think> tag"
-    assert "0-999" in prompt, "Missing answer range instruction"
+    assert isinstance(messages, list), "Prompt should be a list of messages"
+    assert len(messages) == 2, "Expected 2 messages (system, user)"
+    
+    system_msg = messages[0]
+    user_msg = messages[1]
+    
+    assert system_msg["role"] == "system"
+    assert "math competition expert" in system_msg["content"]
+    assert "\\boxed{}" in system_msg["content"]
+    assert "0-999" in system_msg["content"]
+    
+    assert user_msg["role"] == "user"
+    assert user_msg["content"] == problem
 
-    print(f"  Prompt length: {len(prompt)} chars")
-    print(f"  ✅ Prompt structure is valid")
+    print(f"  Messages count: {len(messages)}")
+    print(f"  ✅ Prompt message structure is valid")
     return True
 
 

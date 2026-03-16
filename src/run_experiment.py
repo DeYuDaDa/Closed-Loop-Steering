@@ -73,6 +73,7 @@ from config import (
     CAPTURE_HIDDEN_STATES,
     RESULTS_TIMESTAMP_FMT,
     JSON_INDENT,
+    ENABLE_THINKING,
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
@@ -179,13 +180,10 @@ def run_batched_generation(
 
         formatted_prompts = []
         for p in batch_prompts:
-            if isinstance(p, (list, dict)):
-                # Qwen's template already ends with assistant\n when add_generation_prompt=True
-                # Fast tokenizer will handle special tokens correctly from the string
-                text = tokenizer.apply_chat_template(p, tokenize=False, add_generation_prompt=True)
-                formatted_prompts.append(text)
-            else:
-                formatted_prompts.append(p)
+            # Qwen's template already ends with assistant\n when add_generation_prompt=True
+            # Fast tokenizer will handle special tokens correctly from the message list
+            text = tokenizer.apply_chat_template(p, tokenize=False, add_generation_prompt=True)
+            formatted_prompts.append(text)
 
         # High-performance fast tokenizer call (strings -> tensors with padding)
         tokenizer.padding_side = 'left'
@@ -297,6 +295,7 @@ def run_batched_generation(
                 top_p=TOP_P,
                 pad_token_id=tokenizer.pad_token_id,
                 logits_processor=processors,
+                enable_thinking=ENABLE_THINKING,
             )
 
         if handle is not None:

@@ -49,20 +49,18 @@ def load_zebra_dataset(path: str) -> List[Dict]:
 
 # ======================== Prompt Construction ========================
 
-def build_zebra_prompt(puzzle: str, question: str) -> str:
+def build_zebra_prompt(puzzle: str, question: str) -> list[dict]:
     """
     Construct a chat prompt for ZebraLogic puzzle solving.
     """
-    return (
-        "<|im_start|>system\n"
-        "You are a logic puzzle expert. Solve the following puzzle "
-        "step by step with rigorous reasoning.\n"
-        "Put your final answer (usually a name or value) within \\boxed{}."
-        "<|im_end|>\n"
-        "<|im_start|>user\n"
-        f"Puzzle:\n{puzzle}\n\nQuestion: {question}<|im_end|>\n"
-        "<|im_start|>assistant\n<think>\n"
-    )
+    return [
+        {"role": "system", "content": (
+            "You are a logic puzzle expert. Solve the following puzzle "
+            "step by step with rigorous reasoning.\n"
+            "Put your final answer (usually a name or value) within \\boxed{}."
+        )},
+        {"role": "user", "content": f"Puzzle:\n{puzzle}\n\nQuestion: {question}"}
+    ]
 
 
 # ======================== Answer Extraction ========================
@@ -94,7 +92,10 @@ def extract_answer_zebra(text: str) -> Optional[str]:
     # Try after </think> tag first
     THINK_END = "</think>"
     idx = text.rfind(THINK_END)
-    search_text = text[idx + len(THINK_END):] if idx != -1 else text
+    if idx != -1:
+        search_text = text[idx + len(THINK_END):]
+    else:
+        search_text = text
 
     # Find all \boxed{...}
     boxed_positions = [m.end() for m in re.finditer(r"\\boxed\s*\{", search_text)]

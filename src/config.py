@@ -9,6 +9,7 @@ MODEL_PATH = "/root/autodl-tmp/qwen3-8b"
 LAYER_ID = 24                 # Target transformer layer for hook injection
 DEFAULT_DTYPE = "bfloat16"    # Options: "float16", "bfloat16", "float32"
 DEVICE_MAP = "auto"           # Options: "auto", "cuda:0", "cpu"
+ENABLE_THINKING = True
 
 # CUDA Memory Management
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,garbage_collection_threshold:0.7"

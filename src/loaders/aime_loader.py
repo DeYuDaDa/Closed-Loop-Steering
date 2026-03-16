@@ -80,32 +80,29 @@ def list_aime_datasets(dataset_dir: str) -> list[str]:
 
 # ======================== Prompt Construction ========================
 
-def build_aime_prompt(problem: str) -> str:
+def build_aime_prompt(problem: str) -> list[dict]:
     """
     Construct a chat prompt for AIME problem solving.
 
-    Uses the standard AIME benchmark prompt format:
+    Uses a structured chat format:
     - System message instructs step-by-step reasoning
     - Requires final answer in \\boxed{} format
-    - Uses <think> tag to encourage chain-of-thought
 
     Args:
         problem: The AIME problem statement (may contain LaTeX).
 
     Returns:
-        Full chat prompt string.
+        List of message dicts.
     """
-    return (
-        "<|im_start|>system\n"
-        "You are a math competition expert. Solve the following problem "
-        "step by step with rigorous mathematical reasoning.\n"
-        "self-verification.\n"
-        "Put your final integer answer (0-999) within \\boxed{}."
-        "<|im_end|>\n"
-        "<|im_start|>user\n"
-        f"{problem}<|im_end|>\n"
-        "<|im_start|>assistant\n<think>\n"
-    )
+    return [
+        {"role": "system", "content": (
+            "You are a math competition expert. Solve the following problem "
+            "step by step with rigorous mathematical reasoning.\n"
+            "self-verification.\n"
+            "Put your final integer answer (0-999) within \\boxed{}."
+        )},
+        {"role": "user", "content": problem}
+    ]
 
 
 # ======================== Answer Extraction ========================
