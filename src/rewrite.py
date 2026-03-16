@@ -1,369 +1,6 @@
-"""
-Closed-Loop Steering System — Unified Experiment Runner
-==========================================================
-Replaces the old tag-based `run_dtr_experiments.py`.
-
-Runs three experiment modes:
-  1. Baseline: No intervention at all.
-  2. Continuous: Fixed-strength spherical rotation at every decoding step.
-  3. Dynamic_Spherical: TECA-driven PID → spherical rotation (our method).
-
-Pipeline per experiment:
-  Load model → Load AIME dataset → Run generation with hooks →
-  Collect metrics (DTR, PPL, Repetition, Pass@1 Accuracy, Trajectories) →
-  Generate visualizations.
-
-AIME Evaluation Protocol:
-  - Standard pass@1 exact-match integer scoring (0-999)
-  - Answer extraction via \\boxed{} regex (academic standard)
-  - Datasets run separately for parallel GPU execution
-
-Batch Processing Strategy:
-  - Baseline & Continuous: batched generation (batch_size from config)
-  - Dynamic_Spherical: sequential (per-sequence PID state)
-"""
-
-import os
-import sys
-import gc
-import time
 import json
-import warnings
-import threading
-import queue
-from datetime import datetime
-import argparse
-from tqdm import tqdm
 
-# ---- CUDA Allocator Anti-Fragmentation ----
-# Must be set BEFORE importing torch. Expandable segments prevent the
-# caching allocator from creating permanent fragmentation holes when
-# tensors of varying sizes (KV caches, hidden states) are allocated
-# and freed in a loop.
-import config
-os.environ.setdefault(
-    "PYTORCH_CUDA_ALLOC_CONF",
-    config.PYTORCH_CUDA_ALLOC_CONF
-)
-
-import torch
-import numpy as np
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    LogitsProcessorList,
-)
-
-from config import (
-    MODEL_PATH,
-    LAYER_ID,
-    VECTOR_DIR,
-    MAX_NEW_TOKENS,
-    EXPERIMENT_MODES,
-    RESULTS_DIR,
-    ALPHA_MAX,
-    DATASET_DIR,
-    AIME_MAX_TOKENS,
-    BATCH_SIZE,
-    TEMPERATURE,
-    TOP_P,
-    DEFAULT_DTYPE,
-    DEVICE_MAP,
-    DO_SAMPLE,
-    ENDOFTEXT_ID,
-    SAFE_SCORE_RANGE,
-    CONTINUOUS_ALPHA,
-    CAPTURE_HIDDEN_STATES,
-    RESULTS_TIMESTAMP_FMT,
-    JSON_INDENT,
-    ENABLE_THINKING,
-)
-from state_monitor import InjectionState, StateMonitor
-from pid_controller import PIDController
-from spherical_injector import create_steering_hook
-from vector_injector import VectorInjector
-from dtr_utils import (
-    DTRCalculator,
-    calculate_ppl,
-    calculate_repetition_rate,
-)
-from evaluation_visualizer import PlotVisualizer
-from loaders.aime_loader import (
-    load_aime_dataset,
-    list_aime_datasets,
-    build_aime_prompt,
-    extract_answer as extract_answer_aime,
-    check_answer as check_answer_aime,
-    collate_prompts as collate_prompts_aime,
-)
-from loaders.math500_loader import (
-    load_math500_dataset,
-    build_math500_prompt,
-    extract_answer_math500,
-    check_answer_math500,
-)
-from loaders.zebra_logic_loader import (
-    load_zebra_dataset,
-    build_zebra_prompt,
-    extract_answer_zebra,
-    check_answer_zebra,
-)
-
-
-def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | None:
-    """Load and normalize the critic control vector."""
-    try:
-        injector = VectorInjector(vector_dir, device=device, model_dtype=dtype)
-        if injector.activate("critic", coeff=1.0):
-            # Log raw norm for coeff calibration
-            raw_norm = injector.get_raw_norm()
-            print(f"  📏 Vector raw norm (before normalization): {raw_norm:.4f}")
-
-            v = injector.get_normalized_vector()  # shape [1, 1, d]
-            # Normalize to unit vector
-            v_flat = v.view(-1)
-            v_normalized = v_flat / v_flat.norm()
-            v_normalized = v_normalized.view(v.shape)
-            print(f"  📏 Vector final norm (after normalization): {v_normalized.float().view(-1).norm().item():.4f}")
-            print(f"  ℹ️  Steering uses unit-direction vector; "
-                  f"effective coeff is controlled by alpha (PID output).")
-            injector.deactivate()
-            return v_normalized
-    except Exception as e:
-        print(f"⚠️  Failed to load control vector: {e}")
-    return None
-
-
-# Single sequence generation used to be here, but has been removed
-# because all modes (including Dynamic_Spherical) now use fully batched tensor math.
-
-
-# ======================== Batched Generation ========================
-# Used for Baseline and Continuous modes
-
-def run_batched_generation(
-    model,
-    tokenizer,
-    prompts: list[str],
-    mode: str,
-    control_vector: torch.Tensor | None,
-    batch_size: int = BATCH_SIZE,
-) -> list[dict]:
-    """
-    Run batched generation for ALL modes.
-    
-    Batched state handling and tensor operations natively support Dynamic_Spherical
-    speedup without cross-sequence pollution.
-
-    Args:
-        model: The loaded causal LM.
-        tokenizer: The tokenizer.
-        prompts: List of prompt strings.
-        mode: "Baseline", "Continuous", or "Dynamic_Spherical".
-        control_vector: The steering vector (or None).
-        batch_size: Number of sequences per batch.
-
-    Returns:
-        List of result dicts.
-    """
-    # Resolve </think> token ID for ThinkBrake
-    term_token_id = None
-    try:
-        term_ids = tokenizer.encode("</think>", add_special_tokens=False)
-        if term_ids:
-            term_token_id = term_ids[-1]
-    except Exception:
-        pass
-
-    for batch_start in range(0, len(prompts), batch_size):
-        batch_prompts = prompts[batch_start:batch_start + batch_size]
-        actual_bs = len(batch_prompts)
-
-        batch_results = []
-        formatted_prompts = []
-        for p in batch_prompts:
-            # Qwen's template already ends with assistant\n when add_generation_prompt=True
-            # Fast tokenizer will handle special tokens correctly from the message list
-            text = tokenizer.apply_chat_template(p, tokenize=False, add_generation_prompt=True)
-            formatted_prompts.append(text)
-
-        # High-performance fast tokenizer call (strings -> tensors with padding)
-        tokenizer.padding_side = 'left'
-        inputs = tokenizer(
-            formatted_prompts,
-            padding=True,
-            return_tensors="pt",
-        ).to(model.device)
-        
-        # Reset to right padding
-        tokenizer.padding_side = 'right'
-
-        initial_seq_len = inputs.input_ids.shape[1]
-
-        # Initialize batched state
-        state = InjectionState(batch_size=actual_bs, device=model.device)
-        pid = None
-        processors = LogitsProcessorList()
-
-        # Protection against fp16/bf16 left-padding NaN generation bugs (FlashAttention)
-        class InfNanProtectionProcessor:
-            def __init__(self, eos_id):
-                self.eos_id = eos_id if isinstance(eos_id, int) else (eos_id[0] if isinstance(eos_id, list) else 0)
-
-            def __call__(self, input_ids, scores):
-                # Replace NaNs/Infs in the logits to prevent PyTorch multinomial crash
-                # Replace NaNs with a very negative value so they are safely ignored by softmax
-                torch.nan_to_num_(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
-                
-                # Check for COMPLETE sequence collapse (i.e. all valid logits became strongly negative)
-                max_scores, _ = scores.max(dim=-1)
-                collapsed_mask = max_scores <= (-SAFE_SCORE_RANGE + 1.0)
-                
-                if collapsed_mask.any():
-                    # Record warnings
-                    collapsed_indices = collapsed_mask.nonzero(as_tuple=True)[0].tolist()
-                    seq_len = input_ids.shape[1]
-                    for idx in collapsed_indices:
-                        print(f"  [Warning] 🚨 Sequence {idx} mathematically collapsed at length {seq_len} (NaN generated). Forcing EOS.")
-                    
-                    # Force fully corrupted sequences to generate EOS safely instead of uniformly sampling from padding
-                    scores[collapsed_mask, :] = -SAFE_SCORE_RANGE
-                    scores[collapsed_mask, self.eos_id] = SAFE_SCORE_RANGE
-                    
-                return scores
-
-        processors.append(InfNanProtectionProcessor(tokenizer.eos_token_id)) # Using eos_token_id to terminate safely
-        
-        if mode == "Continuous":
-            state.intervention_active.fill_(True)
-            state.alpha.fill_(CONTINUOUS_ALPHA)  # Use specialized continuous alpha
-        elif mode in ("Dynamic_Spherical",):
-            # PID controller mapped to batch size
-            pid = PIDController(batch_size=actual_bs, device=model.device)
-            
-        # Calculate actual input lengths per sequence in batch
-        input_lens = inputs.attention_mask.sum(dim=1).tolist()
-
-        if mode != "Baseline":
-            monitor = StateMonitor(
-                state=state,
-                pid_controller=pid,
-                term_token_id=term_token_id,
-            )
-            
-            # Since generation doesn't expose sequence completion easily, we add a
-            # quick custom logits processor that examines input_ids to update the active_mask
-            class ActiveMaskProcessor:
-                def __init__(self, state, tokenizer, initial_seq_len):
-                    self.state = state
-                    self.eos_id = tokenizer.eos_token_id
-                    if isinstance(self.eos_id, list): self.eos_id = self.eos_id[0]
-                    self.initial_seq_len = initial_seq_len
-                    
-                def __call__(self, input_ids, scores):
-                    if self.eos_id is not None:
-                        # Slice from initial_seq_len instead of input_lens to only check newly generated tokens
-                        if input_ids.shape[1] > self.initial_seq_len:
-                            gen_part = input_ids[:, self.initial_seq_len:]
-                            has_eos = (gen_part == self.eos_id).any(dim=1)
-                            self.state.active_mask = ~has_eos
-                    return scores
-            
-            processors.append(ActiveMaskProcessor(state, tokenizer, initial_seq_len))
-            processors.append(monitor)
-
-        # Steering hook 
-        history_hidden = []
-        if control_vector is not None and mode in ("Continuous", "Dynamic_Spherical"):
-            hook_fn, history_hidden = create_steering_hook(
-                state=state,
-                control_vector=control_vector,
-                mode=mode,
-                continuous_alpha=CONTINUOUS_ALPHA,
-                capture_hidden_states=CAPTURE_HIDDEN_STATES, # We use offline DTR script now
-            )
-            layer = model.model.layers[LAYER_ID]
-            handle = layer.register_forward_hook(hook_fn)
-        else:
-            handle = None
-
-        # Generate
-        with torch.no_grad():
-            output_ids = model.generate(
-                **inputs,
-                max_new_tokens=AIME_MAX_TOKENS,
-                do_sample=DO_SAMPLE,
-                temperature=TEMPERATURE,
-                top_p=TOP_P,
-                pad_token_id=tokenizer.pad_token_id,
-                logits_processor=processors,
-                enable_thinking=ENABLE_THINKING,
-            )
-
-        if handle is not None:
-            handle.remove()
-
-        # Extract per-sequence results
-        for i in range(actual_bs):
-            # Find where the actual input ends (skip padding tokens)
-            input_mask = inputs.attention_mask[i]
-            input_len = input_mask.sum().item()
-
-            generated_ids = output_ids[i, input_len:]
-            # Remove padding tokens from generated output
-            if tokenizer.pad_token_id is not None:
-                generated_ids = generated_ids[
-                    generated_ids != tokenizer.pad_token_id
-                ]
-
-            gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-            tokens = [
-                tokenizer.decode([t]).replace("\n", "↵")
-                for t in generated_ids
-            ]
-
-            # Extract specific trajectories for this problem
-            ema_traj = state.ema_trajectory[i] if mode != "Baseline" else []
-            alpha_traj = state.alpha_trajectory[i] if mode != "Baseline" else []
-            entropy_traj = state.entropy_trajectory[i] if mode != "Baseline" else []
-            inv_start = state.intervention_start_step[i] if mode != "Baseline" else None
-            inv_end = state.intervention_end_step[i] if mode != "Baseline" else None
-            conv = state.is_converged[i].item() if mode != "Baseline" else False
-
-            # Convert to plain Python list to sever CUDA references
-            batch_results.append({
-                "text": gen_text,
-                "tokens": tokens,
-                "num_tokens": len(tokens),
-                "output_ids": output_ids[i].cpu().tolist(),  # plain list[int]
-                "input_len": input_len,
-                "ema_trajectory": ema_traj,
-                "alpha_trajectory": alpha_traj,
-                "entropy_trajectory": entropy_traj,
-                "history_hidden": [],
-                "intervention_start": inv_start,
-                "intervention_end": inv_end,
-                "convergence": conv,
-            })
-
-        # Free GPU memory after extracting results from this batch
-        del output_ids
-        del inputs
-        del state
-        if pid is not None:
-            del pid
-        if handle is not None:
-            del hook_fn
-        del history_hidden
-        del processors
-        torch.cuda.synchronize()
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        yield batch_results
-
-
-# ======================== Full Experiment Pipeline ========================
+new_code = r'''# ======================== Full Experiment Pipeline ========================
 
 def run_full_experiment(
     model,
@@ -371,8 +8,8 @@ def run_full_experiment(
     dataset: list[dict],
     dataset_name: str = "AIME",
     modes: list[str] | None = None,
-    control_vector: torch.Tensor | None = None,
-    batch_size: int = BATCH_SIZE,
+    control_vector = None,
+    batch_size: int = 1,
     dataset_type: str = "aime",
     results_path: str = None,
 ):
@@ -397,7 +34,11 @@ def run_full_experiment(
         experiment_results dict with per-mode metrics and per-problem details.
     """
     if modes is None:
-        modes = EXPERIMENT_MODES
+        try:
+            from config import EXPERIMENT_MODES
+            modes = EXPERIMENT_MODES
+        except ImportError:
+            modes = ["Baseline"]
 
     experiment_results = {}
     results_queue = queue.Queue()
@@ -425,6 +66,7 @@ def run_full_experiment(
                 else:
                     predicted = extract_answer_aime(result["text"])
                     expected = eval_item["answer"]
+                    # using fallback in standard run_experiment if dataset lacks check
                     is_correct = check_answer_aime(predicted, expected)
 
                 mode_stats["mode_correct"] += int(is_correct)
@@ -489,7 +131,11 @@ def run_full_experiment(
                     k: v for k, v in data.items()
                     if isinstance(v, (int, float, str, list, dict, bool, type(None)))
                 }
-
+            try:
+                from config import JSON_INDENT
+            except ImportError:
+                JSON_INDENT = 4
+                
             if results_path is not None:
                 with open(results_path, "w", encoding="utf-8") as f:
                     json.dump(serializable_results, f, indent=JSON_INDENT, ensure_ascii=False)
@@ -562,6 +208,7 @@ def run_full_experiment(
 
         # ---- Aggregate mode results ----
         mode_total = len(dataset)
+        import numpy as np
         accuracy = mode_stats["mode_correct"] / mode_total if mode_total > 0 else 0
         avg_rep = np.mean(mode_stats["mode_repetitions"]) if mode_stats["mode_repetitions"] else 0
         avg_tokens = mode_stats["mode_tokens_total"] // max(mode_total, 1)
@@ -630,7 +277,10 @@ def run_full_experiment(
                 k: v for k, v in data.items()
                 if isinstance(v, (int, float, str, list, dict, bool, type(None)))
             }
-
+        try:
+            from config import JSON_INDENT
+        except ImportError:
+            JSON_INDENT = 4
         if results_path is not None:
             with open(results_path, "w", encoding="utf-8") as f:
                 json.dump(serializable_results, f, indent=JSON_INDENT, ensure_ascii=False)
@@ -661,6 +311,14 @@ def main():
         help="Experiment modes to run (default: all).",
     )
     args = parser.parse_args()
+
+    try:
+        from config import (
+            DATASET_DIR, DEFAULT_DTYPE, MODEL_PATH, DEVICE_MAP, ENDOFTEXT_ID,
+            VECTOR_DIR, RESULTS_TIMESTAMP_FMT, RESULTS_DIR, BATCH_SIZE
+        )
+    except ImportError:
+        pass
 
     # ---- Determine dataset ----
     if args.dataset:
@@ -760,3 +418,16 @@ def main():
 
 if __name__ == "__main__":
     main()
+'''
+
+with open("f:/academic/Closed-Loop-Steering-System/src/run_experiment.py", "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+for i, line in enumerate(lines):
+    if line.startswith("# ======================== Full Experiment Pipeline ========================"):
+        split_idx = i
+        break
+
+with open("f:/academic/Closed-Loop-Steering-System/src/run_experiment.py", "w", encoding="utf-8") as f:
+    f.writelines(lines[:split_idx])
+    f.write(new_code)
