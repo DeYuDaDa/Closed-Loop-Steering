@@ -1,7 +1,7 @@
 import json
 from typing import Any, Set
 
-JSON_FILE_PATH = "/root/Closed-Loop-Steering-System/src/results/MATH500_40_20260315_221725/experiment_results.json"  # 替换为你的30MB JSON文件路径
+JSON_FILE_PATH = r"C:\Users\m1510\Downloads\experiment_results045merge.json"  # 替换为你的30MB JSON文件路径
 
 def generate_json_schema(
     data: Any,
