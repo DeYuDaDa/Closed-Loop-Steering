@@ -184,7 +184,12 @@ def run_batched_generation(
         for p in batch_prompts:
             # Qwen's template already ends with assistant\n when add_generation_prompt=True
             # Fast tokenizer will handle special tokens correctly from the message list
-            text = tokenizer.apply_chat_template(p, tokenize=False, add_generation_prompt=True)
+            text = tokenizer.apply_chat_template(
+                p, 
+                tokenize=False, 
+                add_generation_prompt=True,
+                enable_thinking=ENABLE_THINKING
+            )
             formatted_prompts.append(text)
 
         # High-performance fast tokenizer call (strings -> tensors with padding)
@@ -297,7 +302,6 @@ def run_batched_generation(
                 top_p=TOP_P,
                 pad_token_id=tokenizer.pad_token_id,
                 logits_processor=processors,
-                enable_thinking=ENABLE_THINKING,
             )
 
         if handle is not None:
