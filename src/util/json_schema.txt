@@ -6,9 +6,9 @@ Baseline: dict
     ppl: float
     tokens: int
     local_dtr: float
-    ema_trajectory: list (empty)
-    alpha_trajectory: list (empty)
-    per_problem: list (element: {'id': 'str', 'expected': 'str', 'predicted': 'str', 'correct': 'bool', 'num_tokens': 'int', 'repetition': 'float', 'full_response': 'str', 'output_ids': 'list (element: int)', 'input_len': 'int', 'dtr_trajectory': 'list (element: int)', 'local_dtr': 'float', 'ppl': 'float'})
+    ema_trajectory: list (element: float)
+    alpha_trajectory: list (element: float)
+    per_problem: list (element: {'id': 'str', 'expected': 'str', 'predicted': 'str', 'correct': 'bool', 'num_tokens': 'int', 'repetition': 'float', 'full_response': 'str', 'output_ids': 'list (element: int)', 'input_len': 'int', 'dtr_trajectory': 'list (element: int)', 'local_dtr': 'float', 'ppl': 'float', 'entropy_trajectory': 'list (element: float)', 'ema_trajectory': 'list (element: float)'})
 Continuous: dict
     accuracy: float
     correct_count: int
@@ -19,7 +19,7 @@ Continuous: dict
     local_dtr: float
     ema_trajectory: list (element: float)
     alpha_trajectory: list (element: float)
-    per_problem: list (element: {'id': 'str', 'expected': 'str', 'predicted': 'NoneType', 'correct': 'bool', 'num_tokens': 'int', 'repetition': 'float', 'full_response': 'str', 'output_ids': 'list (element: int)', 'input_len': 'int', 'dtr_trajectory': 'list (element: int)', 'local_dtr': 'float', 'ppl': 'float'})
+    per_problem: list (element: {'id': 'str', 'expected': 'str', 'predicted': 'NoneType', 'correct': 'bool', 'num_tokens': 'int', 'repetition': 'float', 'full_response': 'str', 'output_ids': 'list (element: int)', 'input_len': 'int', 'dtr_trajectory': 'list (element: int)', 'local_dtr': 'float', 'ppl': 'float', 'entropy_trajectory': 'list (element: float)', 'ema_trajectory': 'list (element: float)'})
 Dynamic_Spherical: dict
     accuracy: float
     correct_count: int

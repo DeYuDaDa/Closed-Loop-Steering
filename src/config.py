@@ -42,7 +42,11 @@ DEFAULT_DTR_LAYER = 16        # Default layer for DTR replay analysis
 CONTEXT_WINDOW_LIMIT = 4096   # Safety limit for internal model forward passes (PPL etc)
 
 # ======================== Spherical Steering ========================
-CONTINUOUS_ALPHA = 0.45       # Default rotation angle for Continuous mode
+CONTINUOUS_ALPHA = 0.45       # Default SLERP rotation angle for Continuous mode
+# Continuous_Linear α is calibrated via Equal Orthogonal Projection from SLERP α:
+#   α_linear = sin(α_slerp * π/2) * ||h||  (applied inside the hook)
+#   α_slerp=0.30 → α_linear≈0.45 | α_slerp=0.45 → α_linear≈0.65
+CONTINUOUS_LINEAR_ALPHA = 0.45  # Calibrated linear coefficient (matches SLERP=0.30 sweet spot)
 CAPTURE_HIDDEN_STATES = False  # Whether to log all hidden states during hook (memory intensive)
 
 # ======================== Vector Paths ========================
@@ -57,8 +61,9 @@ ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 
 # ======================== Experiment ========================
-# EXPERIMENT_MODES = ["Baseline", "Continuous", "Dynamic_Spherical"]
-EXPERIMENT_MODES = ["Continuous", "Dynamic_Spherical"]
+# Available modes: "Baseline", "Continuous", "Continuous_Linear", "Dynamic_Spherical"
+# Continuous_Linear = h + α_linear * ||h|| * v_unit  (bad ablation control group, no SLERP)
+EXPERIMENT_MODES = ["Continuous_Linear", "Dynamic_Spherical"]
 
 RESULTS_DIR = "./results"
 RESULTS_TIMESTAMP_FMT = "%Y%m%d_%H%M%S"

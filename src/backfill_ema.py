@@ -11,20 +11,54 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import config
 
-def calculate_entropy_parallel(model, input_ids_tensor, input_len):
+from spherical_injector import spherical_rotate
+
+def calculate_entropy_parallel(model, input_ids_tensor, input_len, control_vector=None, is_continuous=False):
     """
     Perform a single forward pass and calculate entropy for the generated part.
+    If is_continuous is True, applies steering intervention during the forward pass.
     """
-    with torch.no_grad():
-        outputs = model(input_ids_tensor)
-        logits = outputs.logits  # [1, seq_len, vocab_size]
+    handles = []
+    if is_continuous and control_vector is not None:
+        def parallel_steering_hook(module, args, output):
+            hidden = output[0] if isinstance(output, tuple) else output
+            # Only steer the generated tokens to affect subsequent distributions
+            # The first generated token (at input_len) remains unsteered to match
+            # original behavior where steering starts after the prefill phase.
+            if hidden.shape[1] > input_len:
+                h_to_steer = hidden[:, input_len:-1, :] # Steer tokens that predict NEXT tokens
+                v = control_vector.to(device=hidden.device, dtype=hidden.dtype)
+                
+                # Reshape v for broadcasting if needed
+                if v.dim() == 1: v = v.unsqueeze(0).unsqueeze(0)
+                elif v.dim() == 2: v = v.unsqueeze(0)
+                
+                h_steered = spherical_rotate(h_to_steer, v, config.CONTINUOUS_ALPHA)
+                
+                hidden_new = hidden.clone()
+                hidden_new[:, input_len:-1, :] = h_steered
+                
+                if isinstance(output, tuple):
+                    return (hidden_new,) + output[1:]
+                return hidden_new
+            return output
+
+        # Register hook at target layer
+        layer = model.model.layers[config.LAYER_ID]
+        handle = layer.register_forward_hook(parallel_steering_hook)
+        handles.append(handle)
+
+    try:
+        with torch.no_grad():
+            outputs = model(input_ids_tensor)
+            logits = outputs.logits  # [1, seq_len, vocab_size]
+    finally:
+        # Always remove hooks
+        for h in handles:
+            h.remove()
         
     # We want entropy for tokens generated AFTER input_len
     # logits[0, i] is the prediction for the token at input_ids[0, i+1]
-    # So for the first generated token at index input_len, we need logits at input_len - 1
-    
-    # Slice logits to get predictions for the tokens from input_len onwards
-    # range is from input_len-1 to seq_len-2
     seq_len = input_ids_tensor.shape[1]
     gen_logits = logits[0, input_len-1 : seq_len-1, :] # [gen_len, vocab_size]
     
@@ -34,6 +68,23 @@ def calculate_entropy_parallel(model, input_ids_tensor, input_len):
     entropy = -torch.sum(probs * log_probs, dim=-1) # [gen_len]
     
     return entropy.cpu().tolist()
+
+def load_control_vector(vector_dir, device, dtype):
+    """Mirror of run_experiment's vector loading logic."""
+    from vector_injector import VectorInjector
+    try:
+        injector = VectorInjector(vector_dir, device=device, model_dtype=dtype)
+        if injector.activate("critic", coeff=1.0):
+            v = injector.get_normalized_vector()
+            # Normalize to unit vector
+            v_flat = v.view(-1)
+            v_normalized = v_flat / v_flat.norm()
+            v_normalized = v_normalized.view(v.shape)
+            injector.deactivate()
+            return v_normalized
+    except Exception as e:
+        print(f"⚠️  Failed to load control vector: {e}")
+    return None
 
 def backfill_json(json_path, output_path, limit=None):
     print(f"Loading results from {json_path}...")
@@ -47,7 +98,12 @@ def backfill_json(json_path, output_path, limit=None):
         torch_dtype=model_dtype,
         device_map=config.DEVICE_MAP,
     )
-    # Tokenizer is not strictly needed if we use output_ids, but good for sanity
+    
+    control_vector = load_control_vector(
+        config.VECTOR_DIR, 
+        device=model.device, 
+        dtype=model_dtype
+    )
     
     beta = config.EMA_BETA
     
@@ -61,6 +117,7 @@ def backfill_json(json_path, output_path, limit=None):
             continue
             
         print(f"Processing {group_name} group ({len(problems)} problems)...")
+        is_continuous = (group_name == "Continuous")
         
         count = 0
         for prob in tqdm(problems):
@@ -76,7 +133,13 @@ def backfill_json(json_path, output_path, limit=None):
             # Perform parallel forward pass
             input_ids_tensor = torch.tensor([output_ids], device=model.device)
             try:
-                entropy_traj = calculate_entropy_parallel(model, input_ids_tensor, input_len)
+                entropy_traj = calculate_entropy_parallel(
+                    model, 
+                    input_ids_tensor, 
+                    input_len, 
+                    control_vector=control_vector,
+                    is_continuous=is_continuous
+                )
                 
                 # Calculate EMA
                 ema_traj = []

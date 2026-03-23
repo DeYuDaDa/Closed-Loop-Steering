@@ -1,0 +1,66 @@
+[
+    {
+        "id": "test/number_theory/1032.json",
+        "expected": "2220",
+        "baseline_pred": "2220",
+        "dynamic_pred": null,
+        "baseline_correct": true,
+        "dynamic_correct": false
+    },
+    {
+        "id": "test/intermediate_algebra/607.json",
+        "expected": "13535",
+        "baseline_pred": "13535",
+        "dynamic_pred": null,
+        "baseline_correct": true,
+        "dynamic_correct": false
+    },
+    {
+        "id": "test/number_theory/357.json",
+        "expected": "21",
+        "baseline_pred": "63",
+        "dynamic_pred": "21",
+        "baseline_correct": false,
+        "dynamic_correct": true
+    },
+    {
+        "id": "test/precalculus/1300.json",
+        "expected": "\\begin{pmatrix} -1/3 \\\\ 2/3 \\\\ 5/3 \\end{pmatrix}",
+        "baseline_pred": "\\begin{pmatrix} -\\dfrac{1}{3} \\\\ \\dfrac{2}{3} \\\\ \\dfrac{5}{3} \\end{pmatrix}",
+        "dynamic_pred": "\\begin{pmatrix} -\\frac{1}{3} \\\\ \\frac{2}{3} \\\\ \\frac{5}{3} \\end{pmatrix}",
+        "baseline_correct": false,
+        "dynamic_correct": false
+    },
+    {
+        "id": "test/intermediate_algebra/1354.json",
+        "expected": "\\frac{1997}{2}",
+        "baseline_pred": "\\dfrac{1997}{2}",
+        "dynamic_pred": null,
+        "baseline_correct": true,
+        "dynamic_correct": false
+    },
+    {
+        "id": "test/number_theory/1065.json",
+        "expected": "17",
+        "baseline_pred": "17",
+        "dynamic_pred": null,
+        "baseline_correct": true,
+        "dynamic_correct": false
+    },
+    {
+        "id": "test/precalculus/398.json",
+        "expected": "\\begin{pmatrix} 1/5 \\\\ -18/5 \\end{pmatrix}",
+        "baseline_pred": "\\begin{pmatrix} \\dfrac{1}{5} \\\\ -\\dfrac{18}{5} \\end{pmatrix}",
+        "dynamic_pred": "\\begin{pmatrix} \\frac{1}{5} \\\\ -\\frac{18}{5} \\end{pmatrix}",
+        "baseline_correct": false,
+        "dynamic_correct": false
+    },
+    {
+        "id": "test/prealgebra/1930.json",
+        "expected": "7",
+        "baseline_pred": "7",
+        "dynamic_pred": null,
+        "baseline_correct": true,
+        "dynamic_correct": false
+    }
+]

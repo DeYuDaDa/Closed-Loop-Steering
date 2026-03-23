@@ -1,0 +1,308 @@
+[
+    {
+        "id": "test/intermediate_algebra/1994.json",
+        "expected_answer": "p - q",
+        "baseline_pred": null,
+        "dynamic_pred": "p - q"
+    },
+    {
+        "id": "test/precalculus/927.json",
+        "expected_answer": "90^\\circ",
+        "baseline_pred": null,
+        "dynamic_pred": "90"
+    },
+    {
+        "id": "test/precalculus/1199.json",
+        "expected_answer": "\\pi",
+        "baseline_pred": null,
+        "dynamic_pred": "\\pi"
+    },
+    {
+        "id": "test/counting_and_probability/134.json",
+        "expected_answer": "720",
+        "baseline_pred": null,
+        "dynamic_pred": "720"
+    },
+    {
+        "id": "test/geometry/627.json",
+        "expected_answer": "17",
+        "baseline_pred": null,
+        "dynamic_pred": "17"
+    },
+    {
+        "id": "test/intermediate_algebra/2046.json",
+        "expected_answer": "2",
+        "baseline_pred": null,
+        "dynamic_pred": "2"
+    },
+    {
+        "id": "test/number_theory/357.json",
+        "expected_answer": "21",
+        "baseline_pred": "63",
+        "dynamic_pred": "21"
+    },
+    {
+        "id": "test/intermediate_algebra/362.json",
+        "expected_answer": "40",
+        "baseline_pred": null,
+        "dynamic_pred": "40"
+    },
+    {
+        "id": "test/algebra/2058.json",
+        "expected_answer": "13",
+        "baseline_pred": null,
+        "dynamic_pred": "13"
+    },
+    {
+        "id": "test/geometry/283.json",
+        "expected_answer": "8",
+        "baseline_pred": null,
+        "dynamic_pred": "8"
+    },
+    {
+        "id": "test/geometry/1140.json",
+        "expected_answer": "\\frac{3840}{289}",
+        "baseline_pred": null,
+        "dynamic_pred": "\\dfrac{3840}{289}"
+    },
+    {
+        "id": "test/intermediate_algebra/964.json",
+        "expected_answer": "1",
+        "baseline_pred": null,
+        "dynamic_pred": "1"
+    },
+    {
+        "id": "test/geometry/172.json",
+        "expected_answer": "8",
+        "baseline_pred": null,
+        "dynamic_pred": "8"
+    },
+    {
+        "id": "test/precalculus/117.json",
+        "expected_answer": "30^\\circ",
+        "baseline_pred": null,
+        "dynamic_pred": "30"
+    },
+    {
+        "id": "test/algebra/2517.json",
+        "expected_answer": "-\\frac{35}{9}",
+        "baseline_pred": null,
+        "dynamic_pred": "-\\frac{35}{9}"
+    },
+    {
+        "id": "test/geometry/65.json",
+        "expected_answer": "30^\\circ",
+        "baseline_pred": null,
+        "dynamic_pred": "30"
+    },
+    {
+        "id": "test/algebra/1082.json",
+        "expected_answer": "23",
+        "baseline_pred": null,
+        "dynamic_pred": "23"
+    },
+    {
+        "id": "test/prealgebra/378.json",
+        "expected_answer": "10",
+        "baseline_pred": null,
+        "dynamic_pred": "10"
+    },
+    {
+        "id": "test/intermediate_algebra/102.json",
+        "expected_answer": "2",
+        "baseline_pred": null,
+        "dynamic_pred": "2"
+    },
+    {
+        "id": "test/counting_and_probability/765.json",
+        "expected_answer": "110",
+        "baseline_pred": null,
+        "dynamic_pred": "110"
+    },
+    {
+        "id": "test/number_theory/89.json",
+        "expected_answer": "900",
+        "baseline_pred": null,
+        "dynamic_pred": "900"
+    },
+    {
+        "id": "test/counting_and_probability/894.json",
+        "expected_answer": "540",
+        "baseline_pred": null,
+        "dynamic_pred": "540"
+    },
+    {
+        "id": "test/number_theory/533.json",
+        "expected_answer": "1030",
+        "baseline_pred": null,
+        "dynamic_pred": "1030"
+    },
+    {
+        "id": "test/algebra/1282.json",
+        "expected_answer": "11",
+        "baseline_pred": null,
+        "dynamic_pred": "11"
+    },
+    {
+        "id": "test/prealgebra/260.json",
+        "expected_answer": "36^\\circ",
+        "baseline_pred": null,
+        "dynamic_pred": "36"
+    },
+    {
+        "id": "test/number_theory/631.json",
+        "expected_answer": "36",
+        "baseline_pred": null,
+        "dynamic_pred": "36"
+    },
+    {
+        "id": "test/precalculus/1172.json",
+        "expected_answer": "7",
+        "baseline_pred": null,
+        "dynamic_pred": "7"
+    },
+    {
+        "id": "test/intermediate_algebra/90.json",
+        "expected_answer": "898",
+        "baseline_pred": null,
+        "dynamic_pred": "898"
+    },
+    {
+        "id": "test/number_theory/488.json",
+        "expected_answer": "58",
+        "baseline_pred": null,
+        "dynamic_pred": "58"
+    },
+    {
+        "id": "test/prealgebra/1044.json",
+        "expected_answer": "5.4 \\text{ cents}",
+        "baseline_pred": null,
+        "dynamic_pred": "5.4"
+    },
+    {
+        "id": "test/intermediate_algebra/2152.json",
+        "expected_answer": "0",
+        "baseline_pred": null,
+        "dynamic_pred": "0"
+    },
+    {
+        "id": "test/geometry/947.json",
+        "expected_answer": "-\\frac{24}{25}",
+        "baseline_pred": null,
+        "dynamic_pred": "-\\dfrac{24}{25}"
+    },
+    {
+        "id": "test/counting_and_probability/870.json",
+        "expected_answer": "\\frac{1}{3}",
+        "baseline_pred": null,
+        "dynamic_pred": "\\dfrac{1}{3}"
+    },
+    {
+        "id": "test/algebra/2176.json",
+        "expected_answer": "3",
+        "baseline_pred": null,
+        "dynamic_pred": "3"
+    },
+    {
+        "id": "test/intermediate_algebra/776.json",
+        "expected_answer": "3",
+        "baseline_pred": null,
+        "dynamic_pred": "3"
+    },
+    {
+        "id": "test/prealgebra/1353.json",
+        "expected_answer": "4",
+        "baseline_pred": null,
+        "dynamic_pred": "4"
+    },
+    {
+        "id": "test/intermediate_algebra/1407.json",
+        "expected_answer": "6",
+        "baseline_pred": null,
+        "dynamic_pred": "6"
+    },
+    {
+        "id": "test/number_theory/820.json",
+        "expected_answer": "8",
+        "baseline_pred": null,
+        "dynamic_pred": "8"
+    },
+    {
+        "id": "test/algebra/853.json",
+        "expected_answer": "12",
+        "baseline_pred": null,
+        "dynamic_pred": "12"
+    },
+    {
+        "id": "test/intermediate_algebra/1791.json",
+        "expected_answer": "-\\frac{3}{8}",
+        "baseline_pred": null,
+        "dynamic_pred": "-\\dfrac{3}{8}"
+    },
+    {
+        "id": "test/prealgebra/631.json",
+        "expected_answer": "2",
+        "baseline_pred": null,
+        "dynamic_pred": "2"
+    },
+    {
+        "id": "test/prealgebra/1991.json",
+        "expected_answer": "\\text{Navin}",
+        "baseline_pred": null,
+        "dynamic_pred": "Navin"
+    },
+    {
+        "id": "test/number_theory/928.json",
+        "expected_answer": "3",
+        "baseline_pred": null,
+        "dynamic_pred": "3"
+    },
+    {
+        "id": "test/intermediate_algebra/1797.json",
+        "expected_answer": "2 \\sqrt{5}",
+        "baseline_pred": null,
+        "dynamic_pred": "2\\sqrt{5}"
+    },
+    {
+        "id": "test/number_theory/1002.json",
+        "expected_answer": "1440",
+        "baseline_pred": null,
+        "dynamic_pred": "1440"
+    },
+    {
+        "id": "test/number_theory/1000.json",
+        "expected_answer": "44",
+        "baseline_pred": null,
+        "dynamic_pred": "44"
+    },
+    {
+        "id": "test/intermediate_algebra/1102.json",
+        "expected_answer": "-2,1",
+        "baseline_pred": "1",
+        "dynamic_pred": "-2,1"
+    },
+    {
+        "id": "test/counting_and_probability/1003.json",
+        "expected_answer": "29",
+        "baseline_pred": null,
+        "dynamic_pred": "29"
+    },
+    {
+        "id": "test/precalculus/1082.json",
+        "expected_answer": "\\frac{8}{15}",
+        "baseline_pred": null,
+        "dynamic_pred": "\\dfrac{8}{15}"
+    },
+    {
+        "id": "test/geometry/477.json",
+        "expected_answer": "216",
+        "baseline_pred": null,
+        "dynamic_pred": "216"
+    },
+    {
+        "id": "test/intermediate_algebra/1365.json",
+        "expected_answer": "15",
+        "baseline_pred": null,
+        "dynamic_pred": "15"
+    }
+]

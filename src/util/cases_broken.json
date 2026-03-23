@@ -1,0 +1,104 @@
+[
+    {
+        "id": "test/prealgebra/1622.json",
+        "expected_answer": "42",
+        "baseline_pred": "42",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/number_theory/515.json",
+        "expected_answer": "27",
+        "baseline_pred": "27",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/607.json",
+        "expected_answer": "13535",
+        "baseline_pred": "13535",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/number_theory/864.json",
+        "expected_answer": "52_8",
+        "baseline_pred": "52_8",
+        "dynamic_pred": "52"
+    },
+    {
+        "id": "test/precalculus/675.json",
+        "expected_answer": "4",
+        "baseline_pred": "4",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/991.json",
+        "expected_answer": "3",
+        "baseline_pred": "3",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/algebra/733.json",
+        "expected_answer": "6",
+        "baseline_pred": "6",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/geometry/702.json",
+        "expected_answer": "160",
+        "baseline_pred": "160",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/1354.json",
+        "expected_answer": "\\frac{1997}{2}",
+        "baseline_pred": "\\dfrac{1997}{2}",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/algebra/791.json",
+        "expected_answer": "41",
+        "baseline_pred": "41",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/190.json",
+        "expected_answer": "2",
+        "baseline_pred": "2",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/690.json",
+        "expected_answer": "(1,-16,-4,43)",
+        "baseline_pred": "(1, -16, -4, 43)",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/121.json",
+        "expected_answer": "64",
+        "baseline_pred": "64",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/1014.json",
+        "expected_answer": "50",
+        "baseline_pred": "50",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/number_theory/679.json",
+        "expected_answer": "59",
+        "baseline_pred": "59",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/number_theory/22.json",
+        "expected_answer": "2",
+        "baseline_pred": "2",
+        "dynamic_pred": null
+    },
+    {
+        "id": "test/intermediate_algebra/101.json",
+        "expected_answer": "10",
+        "baseline_pred": "10",
+        "dynamic_pred": null
+    }
+]

@@ -19,7 +19,7 @@ Mathematical formulation (Gram-Schmidt + rotation):
 
 import torch
 import math
-from config import MATH_EPSILON, CONTINUOUS_ALPHA, CAPTURE_HIDDEN_STATES
+from config import MATH_EPSILON, CONTINUOUS_ALPHA, CONTINUOUS_LINEAR_ALPHA, CAPTURE_HIDDEN_STATES
 
 
 def spherical_rotate(
@@ -94,24 +94,77 @@ def spherical_rotate(
 
     return h_new.to(orig_dtype)
 
+
+def linear_inject(
+    h: torch.Tensor,
+    v: torch.Tensor,
+    alpha_linear: float | torch.Tensor,
+    eps: float = MATH_EPSILON,
+) -> torch.Tensor:
+    """
+    Norm-scaled linear addition: h_new = h + α_linear * ||h|| * v_unit.
+
+    This is the "Continuous_Linear" control group (w/o SLERP).
+    The coefficient α_linear is pre-calibrated via Equal Orthogonal Projection
+    so that the projection onto v matches SLERP exactly, making the comparison fair.
+    Crucially, linear addition CANNOT preserve ||h||, increasing the norm by
+    approximately sqrt(1 + α_linear^2) which causes the expected state shock.
+
+    Args:
+        h: Hidden state tensor [batch, 1, d].
+        v: Unit-normalized control vector, shape broadcastable to h.
+        alpha_linear: Pre-calibrated linear coefficient (scalar or [batch] tensor).
+        eps: Numerical stability epsilon.
+
+    Returns:
+        h_new: Norm-perturbed hidden state.
+    """
+    orig_dtype = h.dtype
+    h_f = h.float()
+    v_f = v.float()
+
+    # Ensure v is a unit vector (defensive re-normalization)
+    v_norm = torch.norm(v_f, dim=-1, keepdim=True).clamp_min(eps)
+    v_unit = v_f / v_norm
+
+    # Compute ||h|| per token position: shape [batch, 1, 1]
+    h_norm = torch.norm(h_f, dim=-1, keepdim=True).clamp_min(eps)  # [batch, 1, 1]
+
+    # Broadcast alpha_linear to [batch, 1, 1] if it's a tensor
+    if isinstance(alpha_linear, torch.Tensor):
+        a = alpha_linear.float()
+        while a.dim() < h_f.dim():
+            a = a.unsqueeze(-1)
+    else:
+        a = torch.tensor(alpha_linear, dtype=torch.float32, device=h_f.device)
+
+    # h_new = h + (α_linear * ||h||) * v_unit
+    h_new = h_f + a * h_norm * v_unit
+
+    return h_new.to(orig_dtype)
+
 def create_steering_hook(
     state,
     control_vector: torch.Tensor,
     mode: str = "Dynamic_Spherical",
     continuous_alpha: float = CONTINUOUS_ALPHA,
+    continuous_linear_alpha: float = CONTINUOUS_LINEAR_ALPHA,
     capture_hidden_states: bool = CAPTURE_HIDDEN_STATES,
 ):
     """
-    Factory function that creates a forward hook for spherical steering.
+    Factory function that creates a forward hook for spherical or linear steering.
 
     The hook reads α from the shared InjectionState and applies
-    spherical rotation to the hidden state at the target layer.
+    spherical rotation (Continuous / Dynamic_Spherical) or norm-scaled
+    linear addition (Continuous_Linear) to the hidden state at the target layer.
 
     Args:
         state: InjectionState object (shared with StateMonitor).
         control_vector: Normalized control vector v, shape [1, 1, d].
-        mode: Experiment mode — "Baseline", "Continuous", or "Dynamic_Spherical".
-        continuous_alpha: Fixed rotation angle for Continuous mode.
+        mode: Experiment mode — "Baseline", "Continuous", "Continuous_Linear",
+              or "Dynamic_Spherical".
+        continuous_alpha: Fixed SLERP rotation angle for Continuous mode.
+        continuous_linear_alpha: Fixed linear coefficient for Continuous_Linear mode.
 
     Returns:
         hook: A callable compatible with register_forward_hook().
@@ -140,13 +193,17 @@ def create_steering_hook(
             # Fixed-strength spherical rotation at every step
             alpha = continuous_alpha
 
+        elif mode == "Continuous_Linear":
+            # Fixed-strength norm-scaled linear addition at every step (no SLERP)
+            alpha = continuous_linear_alpha
+
         elif mode == "Dynamic_Spherical":
             # Read α from PID controller via shared state
             alpha = state.alpha
         else:
             return output
 
-        # For scalar alpha (Continuous mode)
+        # For scalar alpha (Continuous / Continuous_Linear mode)
         if isinstance(alpha, (float, int)) and alpha <= 0:
             return output
         # For tensor alpha (Dynamic_Spherical mode)
@@ -165,8 +222,11 @@ def create_steering_hook(
         # Extract the last token's hidden state
         h = hidden[:, -1:, :]  # [batch, 1, dim]
 
-        # Perform spherical rotation
-        h_new = spherical_rotate(h, v, alpha)
+        # Perform injection (linear for Continuous_Linear, spherical for others)
+        if mode == "Continuous_Linear":
+            h_new = linear_inject(h, v, alpha)
+        else:
+            h_new = spherical_rotate(h, v, alpha)
 
         # Write back
         hidden = hidden.clone()

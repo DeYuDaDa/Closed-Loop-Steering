@@ -1,0 +1,31 @@
+这份数据分析的逻辑非常严密，直接切中了当前 LLM 推理时序干预（Temporal Intervention）研究中的痛点。
+
+我为你整理了可以直接复制到论文中的中英文对照文本。这部分内容建议放在论文的 **"Ablation Study" (消融实验)** 或 **"Discussion" (讨论)** 章节中，用来专门论证“为什么仅有空间上的球面投影不够，还必须加上时间上的动态闭环控制”。
+
+在这段文本中，我为你提炼了三个极具学术传播潜力的核心概念：**流形扰动 (Manifold Perturbation)**、**认知摩擦 (Cognitive Friction)** 和 **几何动能 (Geometric Momentum)**。
+
+---
+
+### 英文版 (English Version)
+**Title Suggestion: Ablation on Steering Dynamics: Preserving System-2 Computation**
+
+To decouple the effects of spatial projection from temporal intervention strategies, we conducted an ablation study comparing the Baseline, Continuous spherical steering, and Dynamic spherical steering across different intervention strengths (α=0.3 and α=0.45). Figure A illustrates the distributions of the Local Deep Thinking Rate (DTR). Since both intervention groups employ norm-preserving spherical projection, the observed variance stems entirely from the temporal dynamics of the intervention, revealing three key physical phenomena in the model's forward propagation:
+
+1. **Manifold Perturbation and Variance Expansion:** Compared to the highly concentrated Baseline, both Continuous and Dynamic steering exhibit a wider interquartile range (IQR). The concentrated Baseline DTR often reflects a "cognitive deadlock," where the model engages in deterministic overthinking within an incorrect logical manifold. The expanded variance indicates that spherical perturbation successfully forces the model to explore broader solution spaces, breaking out of local minima.
+2. **Cognitive Friction under Constant Intervention:** Under both α settings, Continuous steering significantly shifts the DTR distribution downward. Although spherical projection prevents catastrophic state shock, constant vector injection introduces "cognitive friction." The model continuously expends computational bandwidth to reconcile its internal priors with the external guidance, which actively suppresses its capacity to maintain deep System-2 reasoning chains.
+3. **Geometric Momentum in Dynamic Closed-Loop Steering:** The Dynamic approach elegantly resolves this friction. At a higher intervention strength (α=0.45), Dynamic steering demonstrates Pareto optimality: its median (0.78) and upper quartile (0.89) strongly rebound, matching or even slightly exceeding the Baseline's upper bounds. This suggests that a stronger, transient intervention provides sufficient "geometric momentum" to push the model across the energy barrier of incorrect reasoning. Once re-aligned to the correct logical manifold, the PD controller gracefully withdraws, allowing the model to fully utilize deep network layers (high DTR) for rigorous logical deduction without sustained interference.
+
+---
+
+### 中文版 (Chinese Version)
+**建议标题：干预动力学消融实验：System-2 计算能力的无损保留**
+
+为了将空间投影与时序干预策略的效应解耦，我们在不同干预强度（α=0.3 和 α=0.45）下，对 Baseline、连续球面干预（Continuous）和动态球面干预（Dynamic）进行了消融对比。图 A 展示了局部深度思考率（Local DTR）的分布变化。由于两个干预组均采用了保范数球面投影，所观测到的分布差异完全归因于干预的时序动力学特征，这揭示了大模型前向传播中的三个关键物理现象：
+
+1. **流形扰动与方差扩张：** 与高度集中的 Baseline 相比，Continuous 和 Dynamic 组均展现出更宽的四分位距（IQR）。Baseline 高度集中的 DTR 往往反映了模型陷入“认知僵局”（例如在错误逻辑流形上的死循环与过度思考）。干预后扩大的方差表明，球面扰动成功迫使模型跳出确定性的局部极小值，去探索更广阔的解空间。
+2. **恒定干预下的“认知摩擦”：** 在两种 α 强度下，Continuous 组的 DTR 分布均出现显著下移。尽管保范数球面投影避免了灾难性的“状态休克”，但无差别的恒定向量注入引入了“认知摩擦”（Cognitive Friction）。模型需要持续消耗算力来调和内部先验与外部引导特征之间的冲突，从而压制了其维持深层 System-2 逻辑链的能力。
+3. **动态闭环系统中的“几何动能”：** 动态策略完美解决了这一摩擦。在更强的 α=0.45 强度下，Dynamic 展现出帕累托最优：其中位数（0.78）和上四分位数（0.89）强势回升，甚至在顶部区域比肩或微弱超越 Baseline。这表明，高强度且瞬态的动态介入提供了足够的“几何动能”（Geometric Momentum），帮助模型一举跨越错误推理路径的能量势垒。一旦模型回归正确的逻辑流形，PD 控制器便平滑撤出，使模型能够在无干扰的状态下调用全部深层网络（高 DTR）完成严密的逻辑推导。
+
+---
+
+**排版建议：** 如果你的论文是双栏排版，可以将这段分析与你刚画好的 **图 A (小提琴图)** 放在同一页的顶部或底部，图文并茂地向审稿人展示：你们不仅做出了效果，而且完全吃透了大模型内部的白盒物理机制。

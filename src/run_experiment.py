@@ -73,6 +73,7 @@ from config import (
     ENDOFTEXT_ID,
     SAFE_SCORE_RANGE,
     CONTINUOUS_ALPHA,
+    CONTINUOUS_LINEAR_ALPHA,
     CAPTURE_HIDDEN_STATES,
     RESULTS_TIMESTAMP_FMT,
     JSON_INDENT,
@@ -242,6 +243,9 @@ def run_batched_generation(
         if mode == "Continuous":
             state.intervention_active.fill_(True)
             state.alpha.fill_(CONTINUOUS_ALPHA)  # Use specialized continuous alpha
+        elif mode == "Continuous_Linear":
+            state.intervention_active.fill_(True)
+            state.alpha.fill_(CONTINUOUS_LINEAR_ALPHA)  # Pre-calibrated linear coefficient
         elif mode in ("Dynamic_Spherical",):
             # PID controller mapped to batch size
             pid = PIDController(batch_size=actual_bs, device=model.device)
@@ -279,12 +283,13 @@ def run_batched_generation(
 
         # Steering hook 
         history_hidden = []
-        if control_vector is not None and mode in ("Continuous", "Dynamic_Spherical"):
+        if control_vector is not None and mode in ("Continuous", "Continuous_Linear", "Dynamic_Spherical"):
             hook_fn, history_hidden = create_steering_hook(
                 state=state,
                 control_vector=control_vector,
                 mode=mode,
                 continuous_alpha=CONTINUOUS_ALPHA,
+                continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
                 capture_hidden_states=CAPTURE_HIDDEN_STATES, # We use offline DTR script now
             )
             layer = model.model.layers[LAYER_ID]
@@ -454,7 +459,7 @@ def run_full_experiment(
                     "input_len": result["input_len"],
                 }
 
-                if mode_name == "Dynamic_Spherical":
+                if mode_name in ("Dynamic_Spherical", "Continuous", "Continuous_Linear"):
                     alpha_traj = result["alpha_trajectory"]
                     detail["ema_trajectory"] = result["ema_trajectory"]
                     detail["alpha_trajectory"] = alpha_traj
