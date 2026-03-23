@@ -61,8 +61,13 @@ ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 
 # ======================== Experiment ========================
-# Available modes: "Baseline", "Continuous", "Continuous_Linear", "Dynamic_Spherical"
-# Continuous_Linear = h + α_linear * ||h|| * v_unit  (bad ablation control group, no SLERP)
+# Available modes: 
+#   "Baseline", "Continuous", "Continuous_Linear", "Dynamic_Spherical"
+# Ablation modes:
+#   "Dynamic_Spherical_No_Manifold" (w/o PCA)
+#   "Dynamic_Linear"                (w/o SLERP)
+#   "Dynamic_Spherical_No_ThinkBrake" (no latch)
+#   "Dynamic_Spherical_No_EMA"      (instantaneous entropy)
 EXPERIMENT_MODES = ["Continuous_Linear", "Dynamic_Spherical"]
 
 RESULTS_DIR = "./results"

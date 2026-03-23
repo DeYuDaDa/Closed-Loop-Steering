@@ -111,28 +111,60 @@ from loaders.zebra_logic_loader import (
 )
 
 
-def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | None:
-    """Load and normalize the critic control vector."""
-    try:
-        injector = VectorInjector(vector_dir, device=device, model_dtype=dtype)
-        if injector.activate("critic", coeff=1.0):
-            # Log raw norm for coeff calibration
-            raw_norm = injector.get_raw_norm()
-            print(f"  📏 Vector raw norm (before normalization): {raw_norm:.4f}")
+def _normalize_vector(v: torch.Tensor) -> torch.Tensor:
+    """Flatten, L2-normalize, and restore shape [1,1,d] as unit vector."""
+    v_flat = v.view(-1)
+    v_normalized = v_flat / v_flat.norm()
+    return v_normalized.view(v.shape)
 
-            v = injector.get_normalized_vector()  # shape [1, 1, d]
-            # Normalize to unit vector
-            v_flat = v.view(-1)
-            v_normalized = v_flat / v_flat.norm()
-            v_normalized = v_normalized.view(v.shape)
-            print(f"  📏 Vector final norm (after normalization): {v_normalized.float().view(-1).norm().item():.4f}")
-            print(f"  ℹ️  Steering uses unit-direction vector; "
-                  f"effective coeff is controlled by alpha (PID output).")
+
+def load_control_vectors(vector_dir: str, device: str, dtype) -> dict[str, torch.Tensor]:
+    """
+    Load and normalize both the PCA-purified ('purified') and the raw ('raw')
+    critic control vectors from disk, returning them in a dict.
+
+    Returns:
+        {
+            "purified": Tensor [1,1,d]  (unit-normalized PCA vector)
+            "raw":      Tensor [1,1,d]  (unit-normalized CAA vector, no PCA)
+        }
+        Either key may be absent if the corresponding file does not exist.
+    """
+    vectors: dict[str, torch.Tensor] = {}
+    injector = VectorInjector(vector_dir, device=device, model_dtype=dtype)
+
+    # ---- Purified (PCA-projected) vector ----
+    try:
+        if injector.activate("critic", coeff=1.0):
+            raw_norm = injector.get_raw_norm()
+            print(f"  📏 [purified] raw norm: {raw_norm:.4f}")
+            v = injector.get_normalized_vector()
+            v_norm = _normalize_vector(v)
+            print(f"  📏 [purified] final norm: {v_norm.float().view(-1).norm().item():.4f}")
+            vectors["purified"] = v_norm
             injector.deactivate()
-            return v_normalized
     except Exception as e:
-        print(f"⚠️  Failed to load control vector: {e}")
-    return None
+        print(f"⚠️  Failed to load purified control vector: {e}")
+
+    # ---- Raw (no-PCA) vector ----
+    try:
+        raw_path = os.path.join(vector_dir, "critic_raw.pt")
+        if os.path.isfile(raw_path):
+            v_raw = torch.load(raw_path, map_location="cpu", weights_only=True)
+            v_raw = v_raw.to(device=device, dtype=dtype)
+            v_raw_norm = _normalize_vector(v_raw.view(1, 1, -1))
+            print(f"  📏 [raw] final norm: {v_raw_norm.float().view(-1).norm().item():.4f}")
+            vectors["raw"] = v_raw_norm
+        else:
+            print(f"  ⚠️  [raw] critic_raw.pt not found in {vector_dir} — w/o Manifold ablation unavailable.")
+    except Exception as e:
+        print(f"⚠️  Failed to load raw control vector: {e}")
+
+    if not vectors:
+        print("⚠️  No control vectors loaded. Continuous and Dynamic modes will have no effect.")
+    else:
+        print(f"  ℹ️  Loaded vectors: {list(vectors.keys())}")
+    return vectors
 
 
 # Single sequence generation used to be here, but has been removed
@@ -142,32 +174,63 @@ def load_control_vector(vector_dir: str, device: str, dtype) -> torch.Tensor | N
 # ======================== Batched Generation ========================
 # Used for Baseline and Continuous modes
 
+# All modes that use a PID controller
+_DYNAMIC_MODES = frozenset([
+    "Dynamic_Spherical",
+    "Dynamic_Spherical_No_Manifold",
+    "Dynamic_Spherical_No_ThinkBrake",
+    "Dynamic_Spherical_No_EMA",
+    "Dynamic_Linear",
+])
+
+# Modes that attach a steering hook
+_HOOK_MODES = frozenset([
+    "Continuous",
+    "Continuous_Linear",
+    "Dynamic_Spherical",
+    "Dynamic_Spherical_No_Manifold",
+    "Dynamic_Spherical_No_ThinkBrake",
+    "Dynamic_Spherical_No_EMA",
+    "Dynamic_Linear",
+])
+
+# Modes that log trajectories
+_TRAJECTORY_MODES = frozenset(_HOOK_MODES)
+
+
 def run_batched_generation(
     model,
     tokenizer,
     prompts: list[str],
     mode: str,
-    control_vector: torch.Tensor | None,
+    control_vectors: dict,
     batch_size: int = BATCH_SIZE,
 ) -> list[dict]:
     """
-    Run batched generation for ALL modes.
-    
-    Batched state handling and tensor operations natively support Dynamic_Spherical
-    speedup without cross-sequence pollution.
+    Run batched generation for ALL modes, including ablation variants.
 
     Args:
         model: The loaded causal LM.
         tokenizer: The tokenizer.
         prompts: List of prompt strings.
-        mode: "Baseline", "Continuous", or "Dynamic_Spherical".
-        control_vector: The steering vector (or None).
+        mode: One of Baseline, Continuous, Continuous_Linear, Dynamic_Spherical,
+              Dynamic_Spherical_No_Manifold, Dynamic_Linear,
+              Dynamic_Spherical_No_ThinkBrake, Dynamic_Spherical_No_EMA.
+        control_vectors: Dict with keys 'purified' and/or 'raw' tensors [1,1,d].
         batch_size: Number of sequences per batch.
 
     Returns:
-        List of result dicts.
+        Generator of list[dict] batch results.
     """
-    # Resolve </think> token ID for ThinkBrake
+    # ---- Resolve which control vector to use for this mode ----
+    # w/o Manifold: raw CAA vector (no PCA purification)
+    # all others:   purified (PCA-projected) vector
+    if mode == "Dynamic_Spherical_No_Manifold":
+        control_vector = control_vectors.get("raw", None)
+    else:
+        control_vector = control_vectors.get("purified", None)
+
+    # ---- Resolve </think> token ID for ThinkBrake
     term_token_id = None
     try:
         term_ids = tokenizer.encode("</think>", add_special_tokens=False)
@@ -246,19 +309,31 @@ def run_batched_generation(
         elif mode == "Continuous_Linear":
             state.intervention_active.fill_(True)
             state.alpha.fill_(CONTINUOUS_LINEAR_ALPHA)  # Pre-calibrated linear coefficient
-        elif mode in ("Dynamic_Spherical",):
-            # PID controller mapped to batch size
+        elif mode in _DYNAMIC_MODES:
+            # PID controller mapped to batch size (all Dynamic_* variants use PID)
             pid = PIDController(batch_size=actual_bs, device=model.device)
             
         # Calculate actual input lengths per sequence in batch
         input_lens = inputs.attention_mask.sum(dim=1).tolist()
 
         if mode != "Baseline":
-            monitor = StateMonitor(
+            # --- Ablation-specific StateMonitor overrides ---
+            # w/o ThinkBrake: set margin_tau to -inf so the latch can never trigger
+            monitor_margin_tau = -9999.0 if mode == "Dynamic_Spherical_No_ThinkBrake" else None
+            # w/o EMA: ema_beta=1.0 means 100% current entropy, 0% history
+            monitor_ema_beta = 1.0 if mode == "Dynamic_Spherical_No_EMA" else None
+
+            monitor_kwargs = dict(
                 state=state,
                 pid_controller=pid,
                 term_token_id=term_token_id,
             )
+            if monitor_margin_tau is not None:
+                monitor_kwargs["margin_tau"] = monitor_margin_tau
+            if monitor_ema_beta is not None:
+                monitor_kwargs["ema_beta"] = monitor_ema_beta
+
+            monitor = StateMonitor(**monitor_kwargs)
             
             # Since generation doesn't expose sequence completion easily, we add a
             # quick custom logits processor that examines input_ids to update the active_mask
@@ -283,14 +358,14 @@ def run_batched_generation(
 
         # Steering hook 
         history_hidden = []
-        if control_vector is not None and mode in ("Continuous", "Continuous_Linear", "Dynamic_Spherical"):
+        if control_vector is not None and mode in _HOOK_MODES:
             hook_fn, history_hidden = create_steering_hook(
                 state=state,
                 control_vector=control_vector,
                 mode=mode,
                 continuous_alpha=CONTINUOUS_ALPHA,
                 continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
-                capture_hidden_states=CAPTURE_HIDDEN_STATES, # We use offline DTR script now
+                capture_hidden_states=CAPTURE_HIDDEN_STATES,
             )
             layer = model.model.layers[LAYER_ID]
             handle = layer.register_forward_hook(hook_fn)
@@ -332,12 +407,13 @@ def run_batched_generation(
             ]
 
             # Extract specific trajectories for this problem
-            ema_traj = state.ema_trajectory[i] if mode != "Baseline" else []
-            alpha_traj = state.alpha_trajectory[i] if mode != "Baseline" else []
-            entropy_traj = state.entropy_trajectory[i] if mode != "Baseline" else []
-            inv_start = state.intervention_start_step[i] if mode != "Baseline" else None
-            inv_end = state.intervention_end_step[i] if mode != "Baseline" else None
-            conv = state.is_converged[i].item() if mode != "Baseline" else False
+            has_state = (mode != "Baseline")
+            ema_traj = state.ema_trajectory[i] if has_state else []
+            alpha_traj = state.alpha_trajectory[i] if has_state else []
+            entropy_traj = state.entropy_trajectory[i] if has_state else []
+            inv_start = state.intervention_start_step[i] if has_state else None
+            inv_end = state.intervention_end_step[i] if has_state else None
+            conv = state.is_converged[i].item() if has_state else False
 
             # Convert to plain Python list to sever CUDA references
             batch_results.append({
@@ -380,7 +456,7 @@ def run_full_experiment(
     dataset: list[dict],
     dataset_name: str = "AIME",
     modes: list[str] | None = None,
-    control_vector: torch.Tensor | None = None,
+    control_vectors: dict | None = None,
     batch_size: int = BATCH_SIZE,
     dataset_type: str = "aime",
     results_path: str = None,
@@ -394,7 +470,7 @@ def run_full_experiment(
     Args:
         model: Loaded causal LM.
         tokenizer: Tokenizer.
-        control_vector: Steering vector (or None).
+        control_vectors: Dict with 'purified' and/or 'raw' steering vectors.
         dataset: List of AIME problem dicts.
         dataset_name: Human-readable label for the dataset.
         modes: Experiment modes to run (defaults to config).
@@ -407,6 +483,8 @@ def run_full_experiment(
     """
     if modes is None:
         modes = EXPERIMENT_MODES
+    if control_vectors is None:
+        control_vectors = {}
 
     experiment_results = {}
     results_queue = queue.Queue()
@@ -549,7 +627,7 @@ def run_full_experiment(
 
         # Create generator
         gen_iterator = run_batched_generation(
-            model, tokenizer, prompts, mode, control_vector,
+            model, tokenizer, prompts, mode, control_vectors,
             batch_size=batch_size
         )
 
@@ -582,8 +660,8 @@ def run_full_experiment(
 
         per_problem_details = mode_data["per_problem"]
 
-        # Module-level diagnostics summary (Dynamic_Spherical only)
-        if mode == "Dynamic_Spherical":
+        # Module-level diagnostics summary (all Dynamic_* modes)
+        if mode in _DYNAMIC_MODES:
             active_steps_list = [
                 d.get("alpha_active_steps", 0) for d in per_problem_details if isinstance(d, dict)
             ]
@@ -722,15 +800,13 @@ def main():
         tokenizer.pad_token_id = ENDOFTEXT_ID
         tokenizer.pad_token = tokenizer.convert_ids_to_tokens(ENDOFTEXT_ID)
 
-    # ---- Load control vector ----
-    control_vector = load_control_vector(
+    # ---- Load control vectors (purified + raw) ----
+    print("\n🔬 Loading control vectors...")
+    control_vectors = load_control_vectors(
         VECTOR_DIR,
         device="cuda" if torch.cuda.is_available() else "cpu",
         dtype=model_dtype,
     )
-    if control_vector is None:
-        print("⚠️  No control vector loaded. "
-              "Continuous and Dynamic modes will have no effect.")
 
     # ---- Save results setup ----
     timestamp = datetime.now().strftime(RESULTS_TIMESTAMP_FMT)
@@ -745,7 +821,7 @@ def main():
         dataset=dataset,
         dataset_name=dataset_name,
         modes=modes,
-        control_vector=control_vector,
+        control_vectors=control_vectors,
         batch_size=BATCH_SIZE,
         dataset_type=dataset_type,
         results_path=results_path,

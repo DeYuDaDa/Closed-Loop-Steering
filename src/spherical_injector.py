@@ -197,7 +197,7 @@ def create_steering_hook(
             # Fixed-strength norm-scaled linear addition at every step (no SLERP)
             alpha = continuous_linear_alpha
 
-        elif mode == "Dynamic_Spherical":
+        elif mode in ("Dynamic_Spherical", "Dynamic_Spherical_No_Manifold", "Dynamic_Spherical_No_ThinkBrake", "Dynamic_Spherical_No_EMA", "Dynamic_Linear"):
             # Read α from PID controller via shared state
             alpha = state.alpha
         else:
@@ -222,9 +222,15 @@ def create_steering_hook(
         # Extract the last token's hidden state
         h = hidden[:, -1:, :]  # [batch, 1, dim]
 
-        # Perform injection (linear for Continuous_Linear, spherical for others)
+        # Perform injection (linear for Continuous_Linear/Dynamic_Linear, spherical for others)
         if mode == "Continuous_Linear":
             h_new = linear_inject(h, v, alpha)
+        elif mode == "Dynamic_Linear":
+            # Linear injection driven by PID (w/o SLERP ablation).
+            # The PID outputs alpha_slerp (e.g. 0.3 or 0.45).
+            # We strictly calibrate it to a physically equivalent linear projection:
+            alpha_linear = torch.sin(alpha * (math.pi / 2.0))
+            h_new = linear_inject(h, v, alpha_linear)
         else:
             h_new = spherical_rotate(h, v, alpha)
 
