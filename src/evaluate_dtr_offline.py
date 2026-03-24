@@ -26,7 +26,7 @@ from config import (
     DTR_RHO,
 )
 from dtr_utils import DTRCalculator, calculate_ppl
-from run_experiment import load_control_vector
+from run_experiment import load_control_vectors, _DYNAMIC_MODES, _HOOK_MODES
 
 # Allow massive segments to prevent DTR fragmentation
 os.environ.setdefault(
@@ -74,12 +74,14 @@ def main():
         tokenizer.pad_token_id = ENDOFTEXT_ID
         tokenizer.pad_token = tokenizer.convert_ids_to_tokens(ENDOFTEXT_ID)
 
-    # 2. Load Control Vector (for Intervention Replay!)
-    control_vector = load_control_vector(
+    # 2. Load Control Vectors (both purified and raw for ablation replay)
+    control_vectors = load_control_vectors(
         VECTOR_DIR,
         device="cuda" if torch.cuda.is_available() else "cpu",
         dtype=model_dtype,
     )
+    purified_cv = control_vectors.get("purified", None)
+    raw_cv      = control_vectors.get("raw", None)
 
     dtr_calc = DTRCalculator(model, g=DTR_G, rho=DTR_RHO)
 
@@ -119,16 +121,27 @@ def main():
             except BaseException:
                 ppl = float("nan")
 
-            # Intervention Replay Args
+            # ---- Determine which control vector to replay with ----
+            # w/o Manifold ablation uses raw (no-PCA) vector
+            if mode == "Dynamic_Spherical_No_Manifold":
+                replay_cv = raw_cv
+            elif mode in _HOOK_MODES:
+                replay_cv = purified_cv
+            else:
+                replay_cv = None  # Baseline
+
+            # ---- Reconstruct alpha trajectory if missing ----
             alpha_traj = prob.get("alpha_trajectory", [])
-            
-            # If Continuous mode has no saved trajectory, reconstruct it from config
-            if mode == "Continuous" and not alpha_traj:
-                alpha_traj = [CONTINUOUS_ALPHA] * (output_ids_gpu.shape[1] - input_len)
+            if not alpha_traj:
+                if mode == "Continuous":
+                    alpha_traj = [CONTINUOUS_ALPHA] * (output_ids_gpu.shape[1] - input_len)
+                elif mode == "Continuous_Linear":
+                    from config import CONTINUOUS_LINEAR_ALPHA
+                    alpha_traj = [CONTINUOUS_LINEAR_ALPHA] * (output_ids_gpu.shape[1] - input_len)
 
             replay_args = {
-                "control_vector": control_vector if mode in ("Continuous", "Dynamic_Spherical") else None,
-                "alpha_trajectory": alpha_traj,
+                "control_vector": replay_cv if alpha_traj else None,
+                "alpha_trajectory": alpha_traj if alpha_traj else None,
                 "input_len": input_len,
                 "layer_id": LAYER_ID,
             }

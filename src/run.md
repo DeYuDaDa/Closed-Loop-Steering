@@ -142,6 +142,45 @@ python extract_critic_vector.py
 
 ---
 
+## 八、后处理脚本
+
+### 8.1 补全缺失的 EMA/熵轨迹（backfill_ema.py）
+
+适用场景：Baseline / Continuous_Linear / 所有消融组的结果文件中缺少 `ema_trajectory` 字段。
+脚本会自动遍历 JSON 中**所有**实验组，按各组的注入方式正确回放 hook。
+
+```bash
+# 默认输出到 *_fixed.json（不覆盖原文件）
+python backfill_ema.py --json_path ./results/.../experiment_results.json
+
+# 覆盖写回原文件
+python backfill_ema.py \
+    --json_path ./results/.../experiment_results.json \
+    --output_path ./results/.../experiment_results.json
+
+# 只处理指定模式（用于调试）
+python backfill_ema.py \
+    --json_path ./results/.../experiment_results.json \
+    --modes Continuous_Linear Dynamic_Spherical_No_EMA \
+    --limit 3
+```
+
+> **注意**：`Dynamic_Spherical_No_Manifold` 需要 `critic_raw.pt` 存在；
+> `Dynamic_Spherical_No_EMA` 会用 `ema_beta=1.0` 重建瞬时熵作为 EMA。
+
+### 8.2 计算 DTR 和 PPL（evaluate_dtr_offline.py）
+
+覆盖全部实验组（包括消融变体），自动选择正确的 replay 向量。
+
+```bash
+python evaluate_dtr_offline.py \
+    --results ./results/.../experiment_results.json
+```
+
+结果直接写回同一文件，追加 `local_dtr` 和 `ppl` 字段。
+
+---
+
 ## 七、论文中的消融声明模板
 
 > *"To ensure a mathematically fair comparison in the 'w/o SLERP' ablation, the linear intervention coefficient α_linear was calibrated via Equal Orthogonal Projection: α_linear = sin(α_slerp × π/2). Thus, α_slerp ∈ {0.3, 0.45} strictly corresponds to α_linear ∈ {0.45, 0.65} scaled by the hidden state norm."*
