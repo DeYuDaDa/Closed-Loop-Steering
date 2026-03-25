@@ -68,6 +68,9 @@ SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 #   "Dynamic_Linear"                (w/o SLERP)
 #   "Dynamic_Spherical_No_ThinkBrake" (no latch)
 #   "Dynamic_Spherical_No_EMA"      (instantaneous entropy)
+# TAE competitor baselines (EMNLP 2025):
+#   "True_TAE"       — open-loop H_t * k → linear inject with raw vector
+#   "TAE_Spherical"  — open-loop H_t * k → SLERP with PCA vector (control variable)
 EXPERIMENT_MODES = ["Continuous_Linear", "Dynamic_Spherical"]
 
 RESULTS_DIR = "./results"

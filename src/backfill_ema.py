@@ -52,8 +52,8 @@ def _get_mode_meta(mode: str) -> dict:
         ema_beta   : float  — beta for EMA reconstruction (1.0 = instantaneous)
     """
     use_hook   = (mode in _HOOK_MODES)
-    use_linear = (mode in ("Continuous_Linear", "Dynamic_Linear"))
-    use_raw    = (mode == "Dynamic_Spherical_No_Manifold")
+    use_linear = (mode in ("Continuous_Linear", "Dynamic_Linear", "True_TAE"))
+    use_raw    = (mode in ("Dynamic_Spherical_No_Manifold", "True_TAE"))
     ema_beta   = 1.0 if mode == "Dynamic_Spherical_No_EMA" else config.EMA_BETA
 
     return dict(use_hook=use_hook, use_linear=use_linear,

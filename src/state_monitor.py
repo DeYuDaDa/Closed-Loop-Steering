@@ -80,17 +80,20 @@ class StateMonitor(LogitsProcessor):
         entropy_threshold: float = ENTROPY_THRESHOLD,
         ema_beta: float = EMA_BETA,
         margin_tau: float = CONVERGENCE_MARGIN_TAU,
+        use_raw_entropy: bool = False,
     ):
         """
         Args:
             state: Shared InjectionState object.
-            pid_controller: Optional PIDController instance. If provided,
-                            PID.step(teca) is called automatically.
+            pid_controller: Optional controller instance (PIDController or TAEController).
+                            If provided, controller.step(entropy) is called automatically.
             term_token_id: Token ID for </think> (for ThinkBrake margin).
             temperature: Softmax temperature for entropy calculation.
             epsilon: Small constant for numerical stability.
             teca_threshold: TECA threshold that triggers intervention.
             margin_tau: Margin threshold for convergence detection.
+            use_raw_entropy: If True, pass raw instantaneous H_t to the controller
+                             instead of the EMA-smoothed entropy. Used by TAE modes.
         """
         self.state = state
         self.pid = pid_controller
@@ -100,6 +103,8 @@ class StateMonitor(LogitsProcessor):
         self.entropy_threshold = entropy_threshold
         self.ema_beta = ema_beta
         self.margin_tau = margin_tau
+        self.use_raw_entropy = use_raw_entropy
+
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         """
@@ -168,11 +173,15 @@ class StateMonitor(LogitsProcessor):
             just_converged = (self.state.margin <= self.margin_tau) & self.state.active_mask
             self.state.is_converged = self.state.is_converged | just_converged
 
-        # --- 3. Drive PID controller if EMA entropy breaches threshold ---
+        # --- 3. Drive controller (PID or TAE) if present ---
         if self.pid is not None:
-            # PID controller step now returns a tensor of alphas [batch]
-            # Use ema_entropy instead of teca
-            alpha = self.pid.step(self.state.ema_entropy, self.state.active_mask, self.state.is_converged)
+            # TAE uses raw H_t; PID uses EMA-smoothed entropy
+            controller_input = (
+                H_t  # raw instantaneous entropy
+                if self.use_raw_entropy
+                else self.state.ema_entropy
+            )
+            alpha = self.pid.step(controller_input, self.state.active_mask, self.state.is_converged)
             self.state.alpha = alpha
 
             # Track intervention window (Vectorized):

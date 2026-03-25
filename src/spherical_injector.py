@@ -197,8 +197,8 @@ def create_steering_hook(
             # Fixed-strength norm-scaled linear addition at every step (no SLERP)
             alpha = continuous_linear_alpha
 
-        elif mode in ("Dynamic_Spherical", "Dynamic_Spherical_No_Manifold", "Dynamic_Spherical_No_ThinkBrake", "Dynamic_Spherical_No_EMA", "Dynamic_Linear"):
-            # Read α from PID controller via shared state
+        elif mode in ("Dynamic_Spherical", "Dynamic_Spherical_No_Manifold", "Dynamic_Spherical_No_ThinkBrake", "Dynamic_Spherical_No_EMA", "Dynamic_Linear", "True_TAE", "TAE_Spherical"):
+            # Read α from controller (PID or TAE) via shared state
             alpha = state.alpha
         else:
             return output
@@ -222,16 +222,21 @@ def create_steering_hook(
         # Extract the last token's hidden state
         h = hidden[:, -1:, :]  # [batch, 1, dim]
 
-        # Perform injection (linear for Continuous_Linear/Dynamic_Linear, spherical for others)
+        # Perform injection based on mode category
         if mode == "Continuous_Linear":
             h_new = linear_inject(h, v, alpha)
         elif mode == "Dynamic_Linear":
             # Linear injection driven by PID (w/o SLERP ablation).
-            # The PID outputs alpha_slerp (e.g. 0.3 or 0.45).
-            # We strictly calibrate it to a physically equivalent linear projection:
+            # The PID outputs alpha_slerp — calibrate to equivalent linear projection.
             alpha_linear = torch.sin(alpha * (math.pi / 2.0))
             h_new = linear_inject(h, v, alpha_linear)
+        elif mode == "True_TAE":
+            # True TAE: open-loop, linear inject with no calibration.
+            # TAE already outputs a direct strength proportional to H_t.
+            # No sin-conversion: the mapping is intentionally non-geometry-aware.
+            h_new = linear_inject(h, v, alpha)
         else:
+            # All spherical modes: Continuous, Dynamic_*, TAE_Spherical
             h_new = spherical_rotate(h, v, alpha)
 
         # Write back

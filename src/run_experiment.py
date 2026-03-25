@@ -81,6 +81,7 @@ from config import (
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
+from tae_controller import TAEController
 from spherical_injector import create_steering_hook
 from vector_injector import VectorInjector
 from dtr_utils import (
@@ -174,13 +175,15 @@ def load_control_vectors(vector_dir: str, device: str, dtype) -> dict[str, torch
 # ======================== Batched Generation ========================
 # Used for Baseline and Continuous modes
 
-# All modes that use a PID controller
+# All modes that use a dynamic controller (PID or TAE)
 _DYNAMIC_MODES = frozenset([
     "Dynamic_Spherical",
     "Dynamic_Spherical_No_Manifold",
     "Dynamic_Spherical_No_ThinkBrake",
     "Dynamic_Spherical_No_EMA",
     "Dynamic_Linear",
+    "True_TAE",
+    "TAE_Spherical",
 ])
 
 # Modes that attach a steering hook
@@ -192,6 +195,8 @@ _HOOK_MODES = frozenset([
     "Dynamic_Spherical_No_ThinkBrake",
     "Dynamic_Spherical_No_EMA",
     "Dynamic_Linear",
+    "True_TAE",
+    "TAE_Spherical",
 ])
 
 # Modes that log trajectories
@@ -223,9 +228,9 @@ def run_batched_generation(
         Generator of list[dict] batch results.
     """
     # ---- Resolve which control vector to use for this mode ----
-    # w/o Manifold: raw CAA vector (no PCA purification)
-    # all others:   purified (PCA-projected) vector
-    if mode == "Dynamic_Spherical_No_Manifold":
+    # True_TAE and w/o Manifold use raw (no-PCA) vector
+    # all others use purified (PCA-projected) vector
+    if mode in ("True_TAE", "Dynamic_Spherical_No_Manifold"):
         control_vector = control_vectors.get("raw", None)
     else:
         control_vector = control_vectors.get("purified", None)
@@ -310,8 +315,11 @@ def run_batched_generation(
             state.intervention_active.fill_(True)
             state.alpha.fill_(CONTINUOUS_LINEAR_ALPHA)  # Pre-calibrated linear coefficient
         elif mode in _DYNAMIC_MODES:
-            # PID controller mapped to batch size (all Dynamic_* variants use PID)
-            pid = PIDController(batch_size=actual_bs, device=model.device)
+            # Dynamic controller — PID for closed-loop modes, TAE for open-loop
+            if mode in ("True_TAE", "TAE_Spherical"):
+                pid = TAEController(batch_size=actual_bs, device=model.device)
+            else:
+                pid = PIDController(batch_size=actual_bs, device=model.device)
             
         # Calculate actual input lengths per sequence in batch
         input_lens = inputs.attention_mask.sum(dim=1).tolist()
@@ -322,11 +330,14 @@ def run_batched_generation(
             monitor_margin_tau = -9999.0 if mode == "Dynamic_Spherical_No_ThinkBrake" else None
             # w/o EMA: ema_beta=1.0 means 100% current entropy, 0% history
             monitor_ema_beta = 1.0 if mode == "Dynamic_Spherical_No_EMA" else None
+            # TAE modes: pass raw H_t to controller, not EMA
+            use_raw_entropy = (mode in ("True_TAE", "TAE_Spherical"))
 
             monitor_kwargs = dict(
                 state=state,
                 pid_controller=pid,
                 term_token_id=term_token_id,
+                use_raw_entropy=use_raw_entropy,
             )
             if monitor_margin_tau is not None:
                 monitor_kwargs["margin_tau"] = monitor_margin_tau

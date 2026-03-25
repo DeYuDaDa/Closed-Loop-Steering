@@ -73,7 +73,27 @@ python run_experiment.py --dataset ./dataset/aime2024_hard50.jsonl \
     --modes Dynamic_Spherical Dynamic_Spherical_No_EMA
 ```
 
-### 4.3 超参敏感性分析
+### 4.3 TAE 竞品对照实验（EMNLP 2025）
+
+TAE (Token-level Adaptive Entropy) 是完全开环的对照方法。
+
+```bash
+# Version A: True TAE — 完全复现 (开环 H_t → 线性注入 → 原始向量)
+python run_experiment.py --dataset ./dataset/aime2024_hard50.jsonl \
+    --modes Baseline True_TAE Dynamic_Spherical
+
+# Version B: TAE + Spherical — 控制变量 (开环 H_t → SLERP → PCA向量)
+# 用于证明即使有最好的"方向盘"，开环瞬时震荡导致的问题依然存在
+python run_experiment.py --dataset ./dataset/aime2024_hard50.jsonl \
+    --modes True_TAE TAE_Spherical Dynamic_Spherical
+```
+
+> **注意**：
+> - `True_TAE` 使用 `critic_raw.pt` 原始向量（无PCA），α_t = clamp(H_t × k, 0, α_max) 直接线性注入
+> - `TAE_Spherical` 使用 PCA 纯化向量 + SLERP，控制变量已隔离至纯控制器差异
+> - 增益系数 `k = ALPHA_MAX / 3.0`（3.0 对应高困惑 token 的典型熵值）
+
+### 4.4 超参敏感性分析
 
 ```bash
 # α=0.30 vs α=0.45（在 config.py 中修改 ALPHA_MAX 后运行）
