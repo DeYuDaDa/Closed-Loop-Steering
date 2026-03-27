@@ -9,6 +9,14 @@ import json
 import os
 import re
 from typing import Optional, List, Dict
+import sys
+import os
+
+try:
+    from util.fix_result_acc import check_equiv
+except ImportError:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from util.fix_result_acc import check_equiv
 
 
 # ======================== Dataset Loading ========================
@@ -146,7 +154,7 @@ def extract_answer_math500(text: str) -> Optional[str]:
 def check_answer_math500(predicted: Optional[str], expected: str) -> bool:
     """
     Compare predicted LaTeX with expected ground truth.
-    Uses normalization to handle minor formatting differences.
+    Uses robust evaluation from fix_result_acc.
     """
     if predicted is None:
         return False
@@ -154,4 +162,12 @@ def check_answer_math500(predicted: Optional[str], expected: str) -> bool:
     p_norm = _normalize_latex(predicted)
     e_norm = _normalize_latex(expected)
     
-    return p_norm == e_norm
+    if p_norm == e_norm:
+        return True
+        
+    try:
+        return check_equiv(expected, predicted)
+    except Exception:
+        pass
+        
+    return False
