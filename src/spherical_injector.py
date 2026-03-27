@@ -200,6 +200,8 @@ def create_steering_hook(
         elif mode in ("Dynamic_Spherical", "Dynamic_Spherical_No_Manifold", "Dynamic_Spherical_No_ThinkBrake", "Dynamic_Spherical_No_EMA", "Dynamic_Linear", "True_TAE", "TAE_Spherical"):
             # Read α from controller (PID or TAE) via shared state
             alpha = state.alpha
+            if hasattr(state, "active_batch_indices") and state.active_batch_indices is not None:
+                alpha = alpha[state.active_batch_indices]
         else:
             return output
 

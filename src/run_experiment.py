@@ -463,6 +463,360 @@ def run_batched_generation(
 # ======================== Continuous Batching Generation ========================
 # Replaces run_batched_generation as the primary inference engine.
 #
+# Strategy B: Batched KV-Cache Continuous Batching.
+# Active slots are physically batched via left-padding of KV caches each step,
+# eliminating serial Python dispatch overhead and maintaining ~100% GPU utilization.
+# Finished slots are dynamically refilled to eliminate straggler wait time.
+
+from dataclasses import dataclass
+
+@dataclass
+class _Slot:
+    """One active decoding slot."""
+    prompt_idx: int
+    input_ids: torch.Tensor                 # [1, seq_len]
+    attention_mask: torch.Tensor            # [1, seq_len]
+    past_key_values: object                 # Tuple of tuples of KV tensors
+    input_len: int
+    n_generated: int = 0
+    done: bool = False
+
+def _stack_and_pad_kv_caches(slots: list[_Slot]):
+    """Left-pad and batch KV caches for a single batched forward."""
+    if not slots:
+        return None, 0
+    # Current sequence length before this decoding step is max of (input_ids - 1)
+    max_len = max(s.input_ids.shape[1] - 1 for s in slots)
+    num_layers = len(slots[0].past_key_values)
+    batched_pkv = []
+    
+    for layer_idx in range(num_layers):
+        layer_k, layer_v = [], []
+        for s in slots:
+            k, v = s.past_key_values[layer_idx]
+            pad_left = max_len - k.shape[2]
+            if pad_left > 0:
+                k = torch.nn.functional.pad(k, (0, 0, pad_left, 0), value=0.0)
+                v = torch.nn.functional.pad(v, (0, 0, pad_left, 0), value=0.0)
+            layer_k.append(k)
+            layer_v.append(v)
+        batched_pkv.append((torch.cat(layer_k, dim=0), torch.cat(layer_v, dim=0)))
+    return tuple(batched_pkv), max_len
+
+def _unpad_and_split_kv_caches(batched_pkv, slots: list[_Slot]):
+    """Extract individual unpadded KV caches from the batched model output."""
+    num_layers = len(batched_pkv)
+    for i, s in enumerate(slots):
+        new_L = s.input_ids.shape[1]  # The *target* length after the step
+        slot_pkv = []
+        for layer_idx in range(num_layers):
+            k = batched_pkv[layer_idx][0][i:i+1, :, -new_L:, :]
+            v = batched_pkv[layer_idx][1][i:i+1, :, -new_L:, :]
+            slot_pkv.append((k, v))
+        s.past_key_values = tuple(slot_pkv)
+
+def _stack_and_pad_attention_masks(slots: list[_Slot]):
+    """Left-pad attention masks to match padded KV caches, then append the new token."""
+    max_len = max(s.input_ids.shape[1] - 1 for s in slots)
+    batched_mask = []
+    for s in slots:
+        pad_left = max_len - (s.input_ids.shape[1] - 1)
+        mask = s.attention_mask
+        if pad_left > 0:
+            mask = torch.nn.functional.pad(mask, (pad_left, 0), value=0)
+        # Append 1 for the new token being generated this step
+        ones = torch.ones(1, 1, dtype=mask.dtype, device=mask.device)
+        mask = torch.cat([mask, ones], dim=1)
+        batched_mask.append(mask)
+    return torch.cat(batched_mask, dim=0)
+
+def _build_global_components(mode: str, term_token_id, device: str, batch_size: int):
+    """Instantiate shared InjectionState, PID, and StateMonitor for the max capacity."""
+    state = InjectionState(batch_size=batch_size, device=device)
+    pid = None
+
+    if mode == "Continuous":
+        state.intervention_active.fill_(True)
+        state.alpha.fill_(CONTINUOUS_ALPHA)
+    elif mode == "Continuous_Linear":
+        state.intervention_active.fill_(True)
+        state.alpha.fill_(CONTINUOUS_LINEAR_ALPHA)
+    elif mode in _DYNAMIC_MODES:
+        if mode in ("True_TAE", "TAE_Spherical"):
+            pid = TAEController(batch_size=batch_size, device=device)
+        else:
+            pid = PIDController(batch_size=batch_size, device=device)
+
+    monitor = None
+    if mode != "Baseline":
+        monitor_margin_tau = -9999.0 if mode == "Dynamic_Spherical_No_ThinkBrake" else None
+        monitor_ema_beta   = 1.0     if mode == "Dynamic_Spherical_No_EMA"              else None
+        use_raw_entropy    = (mode in ("True_TAE", "TAE_Spherical"))
+
+        monitor_kwargs = dict(
+            state=state,
+            pid_controller=pid,
+            term_token_id=term_token_id,
+            use_raw_entropy=use_raw_entropy,
+        )
+        if monitor_margin_tau is not None:
+            monitor_kwargs["margin_tau"] = monitor_margin_tau
+        if monitor_ema_beta is not None:
+            monitor_kwargs["ema_beta"] = monitor_ema_beta
+
+        monitor = StateMonitor(**monitor_kwargs)
+
+    return state, pid, monitor
+
+def _slot_to_result(slot: _Slot, state, slot_idx: int, tokenizer) -> dict:
+    """Convert a finished slot into a result dict, pulling from global state slice."""
+    generated_ids = slot.input_ids[0, slot.input_len:]
+    if tokenizer.pad_token_id is not None:
+        mask = generated_ids != tokenizer.pad_token_id
+        generated_ids = generated_ids[mask]
+
+    gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    tokens   = [tokenizer.decode([t]).replace("\n", "↵") for t in generated_ids]
+
+    has_state = state is not None
+    return {
+        "text":               gen_text,
+        "tokens":             tokens,
+        "num_tokens":         len(tokens),
+        "output_ids":         slot.input_ids[0].cpu().tolist(),
+        "input_len":          slot.input_len,
+        "ema_trajectory":     state.ema_trajectory[slot_idx] if has_state else [],
+        "alpha_trajectory":   state.alpha_trajectory[slot_idx] if has_state else [],
+        "entropy_trajectory": state.entropy_trajectory[slot_idx] if has_state else [],
+        "history_hidden":     [],
+        "intervention_start": state.intervention_start_step[slot_idx] if has_state else None,
+        "intervention_end":   state.intervention_end_step[slot_idx] if has_state else None,
+        "convergence":        state.is_converged[slot_idx].item() if has_state else False,
+    }
+
+def _safe_score_range_clean(scores: torch.Tensor, eos_id: int) -> torch.Tensor:
+    torch.nan_to_num_(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
+    max_scores, _ = scores.max(dim=-1)
+    collapsed = max_scores <= (-SAFE_SCORE_RANGE + 1.0)
+    if collapsed.any():
+        scores[collapsed, :] = -SAFE_SCORE_RANGE
+        scores[collapsed, eos_id] = SAFE_SCORE_RANGE
+    return scores
+
+def run_continuous_batching_generation(
+    model,
+    tokenizer,
+    prompts: list,
+    mode: str,
+    control_vectors: dict,
+    max_concurrent_seqs: int = MAX_CONCURRENT_SEQS,
+) -> "Generator[list[dict], None, None]":
+    device = model.device
+
+    if mode in ("True_TAE", "Dynamic_Spherical_No_Manifold"):
+        control_vector = control_vectors.get("raw", None)
+    else:
+        control_vector = control_vectors.get("purified", None)
+
+    term_token_id = None
+    try:
+        term_ids = tokenizer.encode("</think>", add_special_tokens=False)
+        if term_ids:
+            term_token_id = term_ids[-1]
+    except Exception:
+        pass
+
+    eos_id = tokenizer.eos_token_id
+    if isinstance(eos_id, list): eos_id = eos_id[0]
+
+    from collections import deque
+    pending = deque(range(len(prompts)))
+    
+    # Pre-allocate global state
+    state, pid, monitor = _build_global_components(mode, term_token_id, device, max_concurrent_seqs)
+    
+    hook_handle = None
+    try:
+        # Global steering hook
+        if control_vector is not None and mode in _HOOK_MODES:
+            hook_fn, _ = create_steering_hook(
+                state=state,
+                control_vector=control_vector,
+                mode=mode,
+                continuous_alpha=CONTINUOUS_ALPHA,
+                continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
+                capture_hidden_states=False,
+            )
+            layer = model.model.layers[LAYER_ID]
+            hook_handle = layer.register_forward_hook(hook_fn)
+
+        slots: list[_Slot | None] = [None] * max_concurrent_seqs
+
+        def _sample_batch_tokens(logits_2d: torch.Tensor, do_sample: bool, temperature: float, top_p: float) -> torch.Tensor:
+            if do_sample:
+                logits_scaled = logits_2d / max(temperature, 1e-6)
+                sorted_logits, sorted_idx = torch.sort(logits_scaled, descending=True, dim=-1)
+                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_remove = cumulative_probs - torch.softmax(sorted_logits, dim=-1) > top_p
+                sorted_logits[sorted_remove] = -float("inf")
+                logits_final = torch.full_like(logits_scaled, -float("inf"))
+                logits_final.scatter_(1, sorted_idx, sorted_logits)
+                probs = torch.softmax(logits_final, dim=-1)
+                next_tok = torch.multinomial(probs, num_samples=1)
+            else:
+                next_tok = logits_2d.argmax(dim=-1, keepdim=True)
+            return next_tok # [K, 1]
+
+        def _reset_state_slot(idx: int):
+            if state is not None:
+                state.active_mask[idx] = True
+                state.is_converged[idx] = False
+                state.ema_entropy[idx] = 0.0
+                state.ema_trajectory[idx] = []
+                state.alpha_trajectory[idx] = []
+                state.entropy_trajectory[idx] = []
+                state.intervention_start_step[idx] = None
+                state.intervention_end_step[idx] = None
+                if mode == "Continuous":
+                    state.alpha[idx] = CONTINUOUS_ALPHA
+                elif mode == "Continuous_Linear":
+                    state.alpha[idx] = CONTINUOUS_LINEAR_ALPHA
+                else:
+                    state.alpha[idx] = 0.0
+            if pid is not None and hasattr(pid, 'integral'):
+                pid.integral[idx] = 0.0
+                pid.prev_error[idx] = 0.0
+
+        def _prefill_slot(slot_idx: int, prompt_idx: int) -> _Slot:
+            p = prompts[prompt_idx]
+            text = tokenizer.apply_chat_template(p, tokenize=False, add_generation_prompt=True, enable_thinking=ENABLE_THINKING)
+            enc = tokenizer(text, return_tensors="pt").to(device)
+            
+            _reset_state_slot(slot_idx)
+            
+            if state is not None:
+                state.active_batch_indices = [slot_idx]
+                
+            with torch.no_grad():
+                out = model(input_ids=enc.input_ids, attention_mask=enc.attention_mask, use_cache=True, return_dict=True)
+                
+            first_logits = _safe_score_range_clean(out.logits[:, -1, :], eos_id)
+            
+            slot = _Slot(
+                prompt_idx=prompt_idx,
+                input_ids=enc.input_ids,
+                attention_mask=enc.attention_mask,
+                past_key_values=out.past_key_values,
+                input_len=enc.input_ids.shape[1],
+            )
+
+            if monitor is not None:
+                dummy_ids = torch.zeros((max_concurrent_seqs, enc.input_ids.shape[1]), dtype=torch.long, device=device)
+                dummy_ids[slot_idx] = enc.input_ids[0]
+                dummy_logits = torch.zeros((max_concurrent_seqs, first_logits.shape[1]), dtype=first_logits.dtype, device=device)
+                dummy_logits[slot_idx] = first_logits[0]
+                
+                saved_mask = state.active_mask.clone()
+                state.active_mask.fill_(False)
+                state.active_mask[slot_idx] = True
+                
+                monitor(dummy_ids, dummy_logits)
+                state.active_mask = saved_mask
+                
+            next_tok = _sample_batch_tokens(first_logits, DO_SAMPLE, TEMPERATURE, TOP_P) # [1, 1]
+            slot.input_ids = torch.cat([slot.input_ids, next_tok], dim=1)
+            slot.attention_mask = torch.ones(1, slot.input_ids.shape[1], dtype=torch.long, device=device)
+            slot.n_generated = 1
+            if (next_tok.item() == eos_id) or (slot.n_generated >= AIME_MAX_TOKENS):
+                slot.done = True
+                
+            return slot
+
+        # 1. Fill initial slot pool
+        for i in range(min(max_concurrent_seqs, len(pending))):
+            slot = _prefill_slot(i, pending.popleft())
+            if slot.done:
+                yield [_slot_to_result(slot, state, i, tokenizer)]
+                slot.past_key_values = None
+                slots[i] = None
+            else:
+                slots[i] = slot
+
+        # 2. Main decode loop
+        while any(s is not None for s in slots):
+            active_indices = [i for i, s in enumerate(slots) if s is not None]
+            active_list = [slots[i] for i in active_indices]
+            
+            batched_last_tokens = torch.cat([s.input_ids[:, -1:] for s in active_list], dim=0) # [K, 1]
+            batched_pkv, _ = _stack_and_pad_kv_caches(active_list)
+            batched_mask = _stack_and_pad_attention_masks(active_list)
+            
+            if state is not None:
+                state.active_batch_indices = active_indices
+                
+            with torch.no_grad():
+                out = model(
+                    input_ids=batched_last_tokens,
+                    attention_mask=batched_mask,
+                    past_key_values=batched_pkv,
+                    use_cache=True,
+                    return_dict=True,
+                )
+                
+            _unpad_and_split_kv_caches(out.past_key_values, active_list)
+            logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id) # [K, V]
+            
+            if monitor is not None:
+                max_len = max(s.input_ids.shape[1] for s in active_list)
+                dummy_ids = torch.zeros((max_concurrent_seqs, max_len), dtype=torch.long, device=device)
+                dummy_logits = torch.zeros((max_concurrent_seqs, logits_2d.shape[1]), dtype=logits_2d.dtype, device=device)
+                
+                for list_i, slot_i in enumerate(active_indices):
+                    slen = active_list[list_i].input_ids.shape[1]
+                    dummy_ids[slot_i, :slen] = active_list[list_i].input_ids[0]
+                    dummy_logits[slot_i] = logits_2d[list_i]
+                    
+                saved_mask = state.active_mask.clone()
+                state.active_mask.fill_(False)
+                state.active_mask[active_indices] = True
+                
+                monitor(dummy_ids, dummy_logits)
+                state.active_mask = saved_mask
+                
+            next_tokens = _sample_batch_tokens(logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P) # [K, 1]
+            
+            for list_i, slot_i in enumerate(active_indices):
+                s = active_list[list_i]
+                nxt = next_tokens[list_i:list_i+1] # [1, 1]
+                s.input_ids = torch.cat([s.input_ids, nxt], dim=1)
+                s.attention_mask = torch.ones(1, s.input_ids.shape[1], dtype=torch.long, device=device)
+                s.n_generated += 1
+                
+                if (nxt.item() == eos_id) or (s.n_generated >= AIME_MAX_TOKENS):
+                    s.done = True
+                    yield [_slot_to_result(s, state, slot_i, tokenizer)]
+                    s.past_key_values = None
+                    s.input_ids = None
+                    s.attention_mask = None
+                    
+                    if pending:
+                        new_slot = _prefill_slot(slot_i, pending.popleft())
+                        if new_slot.done:
+                            yield [_slot_to_result(new_slot, state, slot_i, tokenizer)]
+                            new_slot.past_key_values = None
+                            slots[slot_i] = None
+                        else:
+                            slots[slot_i] = new_slot
+                    else:
+                        slots[slot_i] = None
+    finally:
+        if hook_handle is not None:
+            hook_handle.remove()
+
+
+# ======================== Full Experiment Pipeline ========================
+# Replaces run_batched_generation as the primary inference engine.
+#
 # Key invariant: each slot has its own InjectionState, PID, and hook handle,
 # so alpha values are 100% isolated — no cross-slot contamination is possible.
 # Finished slots are immediately refilled, eliminating the straggler problem.
