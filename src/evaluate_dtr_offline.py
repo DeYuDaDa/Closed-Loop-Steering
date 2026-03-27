@@ -122,8 +122,8 @@ def main():
                 ppl = float("nan")
 
             # ---- Determine which control vector to replay with ----
-            # w/o Manifold ablation uses raw (no-PCA) vector
-            if mode == "Dynamic_Spherical_No_Manifold":
+            # True_TAE and w/o Manifold ablation use raw (no-PCA) vector
+            if mode in ("Dynamic_Spherical_No_Manifold", "True_TAE"):
                 replay_cv = raw_cv
             elif mode in _HOOK_MODES:
                 replay_cv = purified_cv

@@ -83,4 +83,6 @@ REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
 # ======================== AIME Benchmark ========================
 DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
 AIME_MAX_TOKENS = 4096        # Extended token budget for math reasoning
-BATCH_SIZE = 16                # Batch size for Baseline / Continuous modes
+BATCH_SIZE = 16                # Legacy static batch size (kept for reference)
+MAX_CONCURRENT_SEQS = 16      # Continuous batching: max slots active simultaneously
+                               # Physical GPU throughput is ~= this number of parallel seqs
