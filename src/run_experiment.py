@@ -507,26 +507,25 @@ def _unpad_and_split_kv_caches(batched_pkv, slots: list[_Slot]):
     """Extract individual unpadded KV caches from the batched model output."""
     num_layers = len(batched_pkv)
     for i, s in enumerate(slots):
-        new_L = s.input_ids.shape[1]  # The *target* length after the step
+        # s.input_ids already contains the newly sampled token which hasn't been fed to model yet,
+        # so the valid KV length in batched_pkv is exactly s.input_ids.shape[1] - 1
+        valid_kv_len = s.input_ids.shape[1] - 1
         slot_pkv = []
         for layer_idx in range(num_layers):
-            k = batched_pkv[layer_idx][0][i:i+1, :, -new_L:, :]
-            v = batched_pkv[layer_idx][1][i:i+1, :, -new_L:, :]
+            k = batched_pkv[layer_idx][0][i:i+1, :, -valid_kv_len:, :]
+            v = batched_pkv[layer_idx][1][i:i+1, :, -valid_kv_len:, :]
             slot_pkv.append((k, v))
         s.past_key_values = tuple(slot_pkv)
 
 def _stack_and_pad_attention_masks(slots: list[_Slot]):
-    """Left-pad attention masks to match padded KV caches, then append the new token."""
-    max_len = max(s.input_ids.shape[1] - 1 for s in slots)
+    """Left-pad attention masks to match the current target sequence lengths."""
+    max_total_len = max(s.input_ids.shape[1] for s in slots)
     batched_mask = []
     for s in slots:
-        pad_left = max_len - (s.input_ids.shape[1] - 1)
+        pad_left = max_total_len - s.input_ids.shape[1]
         mask = s.attention_mask
         if pad_left > 0:
             mask = torch.nn.functional.pad(mask, (pad_left, 0), value=0)
-        # Append 1 for the new token being generated this step
-        ones = torch.ones(1, 1, dtype=mask.dtype, device=mask.device)
-        mask = torch.cat([mask, ones], dim=1)
         batched_mask.append(mask)
     return torch.cat(batched_mask, dim=0)
 
@@ -743,13 +742,16 @@ def run_continuous_batching_generation(
                 slots[i] = slot
 
         # 2. Main decode loop
+        # [Strategy C]: Establish steady-state batched tensors OUTSIDE the inner step loop
+        active_indices = [i for i, s in enumerate(slots) if s is not None]
+        active_list = [slots[i] for i in active_indices]
+        
+        batched_pkv, _ = _stack_and_pad_kv_caches(active_list)
+        batched_mask = _stack_and_pad_attention_masks(active_list)
+        
         while any(s is not None for s in slots):
-            active_indices = [i for i, s in enumerate(slots) if s is not None]
-            active_list = [slots[i] for i in active_indices]
-            
+            # Extract last tokens for current step (O(K))
             batched_last_tokens = torch.cat([s.input_ids[:, -1:] for s in active_list], dim=0) # [K, 1]
-            batched_pkv, _ = _stack_and_pad_kv_caches(active_list)
-            batched_mask = _stack_and_pad_attention_masks(active_list)
             
             if state is not None:
                 state.active_batch_indices = active_indices
@@ -763,11 +765,13 @@ def run_continuous_batching_generation(
                     return_dict=True,
                 )
                 
-            _unpad_and_split_kv_caches(out.past_key_values, active_list)
+            # [Strategy C]: In-place reception of appended KV caches, avoiding Python-level pad & cat overhead
+            batched_pkv = out.past_key_values
+            
             logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id) # [K, V]
             
             if monitor is not None:
-                max_len = max(s.input_ids.shape[1] for s in active_list)
+                max_len = batched_mask.shape[1]
                 dummy_ids = torch.zeros((max_concurrent_seqs, max_len), dtype=torch.long, device=device)
                 dummy_logits = torch.zeros((max_concurrent_seqs, logits_2d.shape[1]), dtype=logits_2d.dtype, device=device)
                 
@@ -785,30 +789,59 @@ def run_continuous_batching_generation(
                 
             next_tokens = _sample_batch_tokens(logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P) # [K, 1]
             
+            has_finished = False
             for list_i, slot_i in enumerate(active_indices):
                 s = active_list[list_i]
                 nxt = next_tokens[list_i:list_i+1] # [1, 1]
                 s.input_ids = torch.cat([s.input_ids, nxt], dim=1)
-                s.attention_mask = torch.ones(1, s.input_ids.shape[1], dtype=torch.long, device=device)
+                # Just append to track the mask lengths locally for each slot
+                s.attention_mask = torch.cat([s.attention_mask, torch.ones(1, 1, dtype=torch.long, device=device)], dim=1)
                 s.n_generated += 1
                 
                 if (nxt.item() == eos_id) or (s.n_generated >= AIME_MAX_TOKENS):
                     s.done = True
-                    yield [_slot_to_result(s, state, slot_i, tokenizer)]
-                    s.past_key_values = None
-                    s.input_ids = None
-                    s.attention_mask = None
-                    
-                    if pending:
-                        new_slot = _prefill_slot(slot_i, pending.popleft())
-                        if new_slot.done:
-                            yield [_slot_to_result(new_slot, state, slot_i, tokenizer)]
-                            new_slot.past_key_values = None
-                            slots[slot_i] = None
+                    has_finished = True
+
+            # Efficiently prepare mask for the NEXT token generation by appending 1s
+            ones_col = torch.ones((len(active_list), 1), dtype=batched_mask.dtype, device=device)
+            batched_mask = torch.cat([batched_mask, ones_col], dim=1)
+            
+            # [Strategy C]: Rare-Restacking
+            # Only incur memory rebuilding overhead if a sequence finished and slots were swapped
+            if has_finished:
+                # 1. Extract the ground-truth PKVs from the huge batched_pkv before we destroy it
+                _unpad_and_split_kv_caches(batched_pkv, active_list)
+                
+                # 2. Process completions and refill slots
+                for list_i, slot_i in enumerate(active_indices):
+                    s = active_list[list_i]
+                    if s.done:
+                        yield [_slot_to_result(s, state, slot_i, tokenizer)]
+                        
+                        # Free slot memory
+                        s.past_key_values = None
+                        s.input_ids = None
+                        s.attention_mask = None
+                        
+                        if pending:
+                            new_slot = _prefill_slot(slot_i, pending.popleft())
+                            if new_slot.done:  # Edge case: prefill immediately generated EOS
+                                yield [_slot_to_result(new_slot, state, slot_i, tokenizer)]
+                                new_slot.past_key_values = None
+                                slots[slot_i] = None
+                            else:
+                                slots[slot_i] = new_slot
                         else:
-                            slots[slot_i] = new_slot
-                    else:
-                        slots[slot_i] = None
+                            slots[slot_i] = None
+                            
+                # 3. Establish a pristine state for the next steady-state batch
+                active_indices = [i for i, s in enumerate(slots) if s is not None]
+                if not active_indices:
+                    break
+                
+                active_list = [slots[i] for i in active_indices]
+                batched_pkv, _ = _stack_and_pad_kv_caches(active_list)
+                batched_mask = _stack_and_pad_attention_masks(active_list)
     finally:
         if hook_handle is not None:
             hook_handle.remove()
