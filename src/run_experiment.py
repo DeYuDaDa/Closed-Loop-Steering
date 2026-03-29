@@ -119,9 +119,10 @@ from loaders.zebra_logic_loader import (
 
 def _normalize_vector(v: torch.Tensor) -> torch.Tensor:
     """Flatten, L2-normalize, and restore shape [1,1,d] as unit vector."""
-    v_flat = v.view(-1)
-    v_normalized = v_flat / (v_flat.norm() + 1e-8)
-    return v_normalized.view(v.shape)
+    orig_dtype = v.dtype
+    v_f32 = v.float().view(-1)
+    v_normalized = v_f32 / (v_f32.norm() + 1e-8)
+    return v_normalized.view(v.shape).to(orig_dtype)
 
 
 def load_control_vectors(vector_dir: str, device: str, dtype, pca_coeff: float = 1.0) -> dict[str, torch.Tensor]:
@@ -500,11 +501,13 @@ def _stack_and_pad_kv_caches(slots: list[_Slot]):
             k, v = s.past_key_values[layer_idx]
             pad_left = max_len - k.shape[2]
             if pad_left > 0:
-                k = torch.nn.functional.pad(k, (0, 0, pad_left, 0), value=0.0)
-                v = torch.nn.functional.pad(v, (0, 0, pad_left, 0), value=0.0)
+                k = torch.nn.functional.pad(k, (0, 0, pad_left, 0), value=0.0).to(k.dtype)
+                v = torch.nn.functional.pad(v, (0, 0, pad_left, 0), value=0.0).to(v.dtype)
             layer_k.append(k)
             layer_v.append(v)
-        batched_pkv.append((torch.cat(layer_k, dim=0), torch.cat(layer_v, dim=0)))
+        batched_k = torch.cat(layer_k, dim=0).to(layer_k[0].dtype)
+        batched_v = torch.cat(layer_v, dim=0).to(layer_v[0].dtype)
+        batched_pkv.append((batched_k, batched_v))
     return tuple(batched_pkv), max_len
 
 def _unpad_and_split_kv_caches(batched_pkv, slots: list[_Slot]):
@@ -598,12 +601,24 @@ def _slot_to_result(slot: _Slot, state, slot_idx: int, tokenizer) -> dict:
     }
 
 def _safe_score_range_clean(scores: torch.Tensor, eos_id: int) -> None:
-    torch.nan_to_num_(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
+    fp8_safe_min = -400.0
+    fp8_safe_max = 400.0
+    if USE_FP8:
+        scores.clamp_(min=fp8_safe_min, max=fp8_safe_max)
+
+    torch.nan_to_num_(
+        scores, 
+        nan=fp8_safe_min if USE_FP8 else -SAFE_SCORE_RANGE, 
+        posinf=fp8_safe_max if USE_FP8 else SAFE_SCORE_RANGE, 
+        neginf=fp8_safe_min if USE_FP8 else -SAFE_SCORE_RANGE
+    )
     max_scores, _ = scores.max(dim=-1)
-    collapsed = max_scores <= (-SAFE_SCORE_RANGE + 1.0)
+    collapsed_threshold = fp8_safe_min + 1.0 if USE_FP8 else (-SAFE_SCORE_RANGE + 1.0)
+    collapsed = max_scores <= collapsed_threshold
+    
     if collapsed.any():
-        scores[collapsed, :] = -SAFE_SCORE_RANGE
-        scores[collapsed, eos_id] = SAFE_SCORE_RANGE
+        scores[collapsed, :] = fp8_safe_min if USE_FP8 else -SAFE_SCORE_RANGE
+        scores[collapsed, eos_id] = fp8_safe_max if USE_FP8 else SAFE_SCORE_RANGE
 
 def run_continuous_batching_generation(
     model,
@@ -704,7 +719,12 @@ def run_continuous_batching_generation(
                 state.active_batch_indices = [slot_idx]
                 
             with torch.no_grad():
-                out = model(input_ids=enc.input_ids, attention_mask=enc.attention_mask, use_cache=True, return_dict=True)
+                if USE_FP8:
+                    from torch.cuda.amp import autocast
+                    with autocast(dtype=torch.float8_e4m3fn):
+                        out = model(input_ids=enc.input_ids, attention_mask=enc.attention_mask, use_cache=True, return_dict=True)
+                else:
+                    out = model(input_ids=enc.input_ids, attention_mask=enc.attention_mask, use_cache=True, return_dict=True)
                 
             first_logits = out.logits[:, -1, :].clone()
             _safe_score_range_clean(first_logits, eos_id)
@@ -767,13 +787,24 @@ def run_continuous_batching_generation(
                 state.active_batch_indices = active_indices
                 
             with torch.no_grad():
-                out = model(
-                    input_ids=batched_last_tokens,
-                    attention_mask=batched_mask,
-                    past_key_values=batched_pkv,
-                    use_cache=True,
-                    return_dict=True,
-                )
+                if USE_FP8:
+                    from torch.cuda.amp import autocast
+                    with autocast(dtype=torch.float8_e4m3fn):
+                        out = model(
+                            input_ids=batched_last_tokens,
+                            attention_mask=batched_mask,
+                            past_key_values=batched_pkv,
+                            use_cache=True,
+                            return_dict=True,
+                        )
+                else:
+                    out = model(
+                        input_ids=batched_last_tokens,
+                        attention_mask=batched_mask,
+                        past_key_values=batched_pkv,
+                        use_cache=True,
+                        return_dict=True,
+                    )
                 
             # [Strategy C]: In-place reception of appended KV caches, avoiding Python-level pad & cat overhead
             batched_pkv = out.past_key_values
@@ -1209,12 +1240,15 @@ def main():
         "device_map": DEVICE_MAP,
     }
     
+    model_kwargs["torch_dtype"] = model_dtype
     if USE_FP8:
-        # Require Ada/Blackwell architecture
-        model_kwargs["torch_dtype"] = getattr(torch, "float8_e4m3fn", model_dtype)
-    else:
-        model_kwargs["torch_dtype"] = model_dtype
-        
+        try:
+            import torch._inductor.config
+            torch._inductor.config.fp8_e4m3fn = True
+            torch._inductor.config.use_mixed_mm = True
+        except ImportError:
+            pass
+
     if USE_FLASH_ATTENTION:
         model_kwargs["attn_implementation"] = "flash_attention_2"
         
