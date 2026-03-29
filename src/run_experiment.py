@@ -748,9 +748,29 @@ def run_continuous_batching_generation(
         
         batched_pkv, _ = _stack_and_pad_kv_caches(active_list)
         batched_mask = _stack_and_pad_attention_masks(active_list)
-        
+
+        # [P0 Fix 2]: Pre-allocate a persistent ones column and dummy buffers to avoid
+        # per-step CUDA memory allocation.  Buffers are resized only when slot count changes
+        # (rare), so the hot-path below does zero dynamic allocations.
+        _K = len(active_list)
+        ones_col = torch.ones((_K, 1), dtype=batched_mask.dtype, device=device)
+
+        # [P0 Fix 1]: Pre-allocate dummy monitor buffers (reused every step via zero_()).
+        # We over-provision the seq-len dimension to AIME_MAX_TOKENS so the buffer is
+        # never reallocated as max_len grows step-by-step.
+        if monitor is not None:
+            vocab_size = out_vocab_size = model.config.vocab_size
+            dummy_ids_buf    = torch.zeros((max_concurrent_seqs, AIME_MAX_TOKENS + 8192),
+                                           dtype=torch.long, device=device)
+            dummy_logits_buf = torch.zeros((max_concurrent_seqs, vocab_size),
+                                           dtype=torch.float32, device=device)
+        else:
+            dummy_ids_buf = dummy_logits_buf = None
+
+        eos_id_tensor = torch.tensor(eos_id, dtype=torch.long, device=device)
+
         while any(s is not None for s in slots):
-            # Extract last tokens for current step (O(K))
+            # Extract last tokens for current step (O(K), no GPU alloc)
             batched_last_tokens = torch.cat([s.input_ids[:, -1:] for s in active_list], dim=0) # [K, 1]
             
             if state is not None:
@@ -765,45 +785,57 @@ def run_continuous_batching_generation(
                     return_dict=True,
                 )
                 
-            # [Strategy C]: In-place reception of appended KV caches, avoiding Python-level pad & cat overhead
+            # [Strategy C]: In-place reception — HF appends the new KV column at C++ level
             batched_pkv = out.past_key_values
             
             logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id) # [K, V]
             
             if monitor is not None:
-                max_len = batched_mask.shape[1]
-                dummy_ids = torch.zeros((max_concurrent_seqs, max_len), dtype=torch.long, device=device)
-                dummy_logits = torch.zeros((max_concurrent_seqs, logits_2d.shape[1]), dtype=logits_2d.dtype, device=device)
-                
+                # [P0 Fix 1]: Reuse pre-allocated buffers; zero_ avoids any CUDA realloc.
+                cur_len = batched_mask.shape[1]   # current sequence length
+                dummy_ids_buf.zero_()
+                dummy_logits_buf.zero_()
                 for list_i, slot_i in enumerate(active_indices):
                     slen = active_list[list_i].input_ids.shape[1]
-                    dummy_ids[slot_i, :slen] = active_list[list_i].input_ids[0]
-                    dummy_logits[slot_i] = logits_2d[list_i]
-                    
+                    dummy_ids_buf[slot_i, :slen] = active_list[list_i].input_ids[0]
+                    dummy_logits_buf[slot_i] = logits_2d[list_i]
+                # Pass exact-length views (no copy — just a strided slice)
+                dummy_ids_view = dummy_ids_buf[:, :cur_len]
+
                 saved_mask = state.active_mask.clone()
                 state.active_mask.fill_(False)
                 state.active_mask[active_indices] = True
-                
-                monitor(dummy_ids, dummy_logits)
+                monitor(dummy_ids_view, dummy_logits_buf)
                 state.active_mask = saved_mask
                 
             next_tokens = _sample_batch_tokens(logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P) # [K, 1]
-            
-            has_finished = False
+
+            # [P0 Fix 2]: GPU-side EOS detection — avoids K per-slot CUDA→CPU syncs.
+            # next_tokens is [K, 1]; squeeze to [K] for comparison.
+            next_flat = next_tokens.squeeze(1)                          # [K], stays on GPU
+            eos_hit   = next_flat.eq(eos_id_tensor)                     # [K] bool, on GPU
+            n_gen_arr = torch.tensor([s.n_generated + 1 for s in active_list],
+                                     dtype=torch.long, device=device)   # [K]
+            max_hit   = n_gen_arr.ge(AIME_MAX_TOKENS)                   # [K] bool, on GPU
+            done_mask = eos_hit | max_hit                                # [K] bool, on GPU
+
+            # Single sync: only pay CUDA→CPU cost once per step (not K times)
+            has_finished = done_mask.any().item()
+
+            # Update per-slot bookkeeping (no .item() calls here)
+            done_list_cpu = done_mask.tolist() if has_finished else [False] * _K
             for list_i, slot_i in enumerate(active_indices):
                 s = active_list[list_i]
-                nxt = next_tokens[list_i:list_i+1] # [1, 1]
+                nxt = next_tokens[list_i:list_i+1]   # [1, 1] view, no copy
                 s.input_ids = torch.cat([s.input_ids, nxt], dim=1)
-                # Just append to track the mask lengths locally for each slot
-                s.attention_mask = torch.cat([s.attention_mask, torch.ones(1, 1, dtype=torch.long, device=device)], dim=1)
+                s.attention_mask = torch.cat(
+                    [s.attention_mask, torch.ones(1, 1, dtype=torch.long, device=device)], dim=1
+                )
                 s.n_generated += 1
-                
-                if (nxt.item() == eos_id) or (s.n_generated >= AIME_MAX_TOKENS):
+                if has_finished and done_list_cpu[list_i]:
                     s.done = True
-                    has_finished = True
 
-            # Efficiently prepare mask for the NEXT token generation by appending 1s
-            ones_col = torch.ones((len(active_list), 1), dtype=batched_mask.dtype, device=device)
+            # Append new-token column to the shared mask (reuse pre-allocated ones_col)
             batched_mask = torch.cat([batched_mask, ones_col], dim=1)
             
             # [Strategy C]: Rare-Restacking
@@ -842,6 +874,9 @@ def run_continuous_batching_generation(
                 active_list = [slots[i] for i in active_indices]
                 batched_pkv, _ = _stack_and_pad_kv_caches(active_list)
                 batched_mask = _stack_and_pad_attention_masks(active_list)
+                # Refresh pre-allocated hot-path tensors to match new active count
+                _K = len(active_list)
+                ones_col = torch.ones((_K, 1), dtype=batched_mask.dtype, device=device)
     finally:
         if hook_handle is not None:
             hook_handle.remove()
@@ -1239,7 +1274,7 @@ def run_full_experiment(
     dataset_name: str = "AIME",
     modes: list[str] | None = None,
     control_vectors: dict | None = None,
-    batch_size: int = BATCH_SIZE,
+    max_concurrent_seqs: int = MAX_CONCURRENT_SEQS,
     dataset_type: str = "aime",
     results_path: str = None,
 ):
@@ -1382,7 +1417,7 @@ def run_full_experiment(
         else:
             prompts = collate_prompts_aime(dataset)
 
-        print(f"  Using CONTINUOUS BATCHING (max_concurrent_seqs={batch_size}) for ALL modes...")
+        print(f"  Using CONTINUOUS BATCHING (max_concurrent_seqs={max_concurrent_seqs}) for ALL modes...")
         
         mode_data = {
             "accuracy": 0.0,
@@ -1410,7 +1445,7 @@ def run_full_experiment(
         # Create generator — continuous batching eliminates straggler padding waste
         gen_iterator = run_continuous_batching_generation(
             model, tokenizer, prompts, mode, control_vectors,
-            max_concurrent_seqs=batch_size
+            max_concurrent_seqs=max_concurrent_seqs
         )
 
         batch_start = 0
@@ -1604,7 +1639,7 @@ def main():
         dataset_name=dataset_name,
         modes=modes,
         control_vectors=control_vectors,
-        batch_size=BATCH_SIZE,
+        max_concurrent_seqs=MAX_CONCURRENT_SEQS,
         dataset_type=dataset_type,
         results_path=results_path,
     )
