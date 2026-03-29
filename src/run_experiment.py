@@ -48,6 +48,7 @@ os.environ.setdefault(
 
 import torch
 import numpy as np
+from dataclasses import dataclass
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -69,6 +70,9 @@ from config import (
     TEMPERATURE,
     TOP_P,
     DEFAULT_DTYPE,
+    USE_FP8,
+    USE_FLASH_ATTENTION,
+    RESTACK_INTERVAL,
     DEVICE_MAP,
     DO_SAMPLE,
     ENDOFTEXT_ID,
@@ -116,11 +120,11 @@ from loaders.zebra_logic_loader import (
 def _normalize_vector(v: torch.Tensor) -> torch.Tensor:
     """Flatten, L2-normalize, and restore shape [1,1,d] as unit vector."""
     v_flat = v.view(-1)
-    v_normalized = v_flat / v_flat.norm()
+    v_normalized = v_flat / (v_flat.norm() + 1e-8)
     return v_normalized.view(v.shape)
 
 
-def load_control_vectors(vector_dir: str, device: str, dtype) -> dict[str, torch.Tensor]:
+def load_control_vectors(vector_dir: str, device: str, dtype, pca_coeff: float = 1.0) -> dict[str, torch.Tensor]:
     """
     Load and normalize both the PCA-purified ('purified') and the raw ('raw')
     critic control vectors from disk, returning them in a dict.
@@ -137,7 +141,7 @@ def load_control_vectors(vector_dir: str, device: str, dtype) -> dict[str, torch
 
     # ---- Purified (PCA-projected) vector ----
     try:
-        if injector.activate("critic", coeff=1.0):
+        if injector.activate("critic", coeff=pca_coeff):
             raw_norm = injector.get_raw_norm()
             print(f"  📏 [purified] raw norm: {raw_norm:.4f}")
             v = injector.get_normalized_vector()
@@ -263,6 +267,7 @@ def run_batched_generation(
             formatted_prompts.append(text)
 
         # High-performance fast tokenizer call (strings -> tensors with padding)
+        original_padding_side = getattr(tokenizer, "padding_side", "right")
         tokenizer.padding_side = 'left'
         inputs = tokenizer(
             formatted_prompts,
@@ -270,8 +275,8 @@ def run_batched_generation(
             return_tensors="pt",
         ).to(model.device)
         
-        # Reset to right padding
-        tokenizer.padding_side = 'right'
+        # Reset to original padding
+        tokenizer.padding_side = original_padding_side
 
         initial_seq_len = inputs.input_ids.shape[1]
 
@@ -453,6 +458,7 @@ def run_batched_generation(
             del hook_fn
         del history_hidden
         del processors
+        del formatted_prompts, input_lens
         torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
@@ -467,8 +473,6 @@ def run_batched_generation(
 # Active slots are physically batched via left-padding of KV caches each step,
 # eliminating serial Python dispatch overhead and maintaining ~100% GPU utilization.
 # Finished slots are dynamically refilled to eliminate straggler wait time.
-
-from dataclasses import dataclass
 
 @dataclass
 class _Slot:
@@ -584,23 +588,22 @@ def _slot_to_result(slot: _Slot, state, slot_idx: int, tokenizer) -> dict:
         "num_tokens":         len(tokens),
         "output_ids":         slot.input_ids[0].cpu().tolist(),
         "input_len":          slot.input_len,
-        "ema_trajectory":     state.ema_trajectory[slot_idx] if has_state else [],
-        "alpha_trajectory":   state.alpha_trajectory[slot_idx] if has_state else [],
-        "entropy_trajectory": state.entropy_trajectory[slot_idx] if has_state else [],
+        "ema_trajectory":     list(state.ema_trajectory[slot_idx]) if has_state else [],
+        "alpha_trajectory":   list(state.alpha_trajectory[slot_idx]) if has_state else [],
+        "entropy_trajectory": list(state.entropy_trajectory[slot_idx]) if has_state else [],
         "history_hidden":     [],
         "intervention_start": state.intervention_start_step[slot_idx] if has_state else None,
         "intervention_end":   state.intervention_end_step[slot_idx] if has_state else None,
         "convergence":        state.is_converged[slot_idx].item() if has_state else False,
     }
 
-def _safe_score_range_clean(scores: torch.Tensor, eos_id: int) -> torch.Tensor:
+def _safe_score_range_clean(scores: torch.Tensor, eos_id: int) -> None:
     torch.nan_to_num_(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE, neginf=-SAFE_SCORE_RANGE)
     max_scores, _ = scores.max(dim=-1)
     collapsed = max_scores <= (-SAFE_SCORE_RANGE + 1.0)
     if collapsed.any():
         scores[collapsed, :] = -SAFE_SCORE_RANGE
         scores[collapsed, eos_id] = SAFE_SCORE_RANGE
-    return scores
 
 def run_continuous_batching_generation(
     model,
@@ -609,6 +612,10 @@ def run_continuous_batching_generation(
     mode: str,
     control_vectors: dict,
     max_concurrent_seqs: int = MAX_CONCURRENT_SEQS,
+    continuous_alpha: float = CONTINUOUS_ALPHA,
+    continuous_linear_alpha: float = CONTINUOUS_LINEAR_ALPHA,
+    max_new_tokens: int = AIME_MAX_TOKENS,
+    restack_interval: int = RESTACK_INTERVAL,
 ) -> "Generator[list[dict], None, None]":
     device = model.device
 
@@ -642,8 +649,8 @@ def run_continuous_batching_generation(
                 state=state,
                 control_vector=control_vector,
                 mode=mode,
-                continuous_alpha=CONTINUOUS_ALPHA,
-                continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
+                continuous_alpha=continuous_alpha,
+                continuous_linear_alpha=continuous_linear_alpha,
                 capture_hidden_states=False,
             )
             layer = model.model.layers[LAYER_ID]
@@ -677,9 +684,9 @@ def run_continuous_batching_generation(
                 state.intervention_start_step[idx] = None
                 state.intervention_end_step[idx] = None
                 if mode == "Continuous":
-                    state.alpha[idx] = CONTINUOUS_ALPHA
+                    state.alpha[idx] = continuous_alpha
                 elif mode == "Continuous_Linear":
-                    state.alpha[idx] = CONTINUOUS_LINEAR_ALPHA
+                    state.alpha[idx] = continuous_linear_alpha
                 else:
                     state.alpha[idx] = 0.0
             if pid is not None and hasattr(pid, 'integral'):
@@ -699,7 +706,8 @@ def run_continuous_batching_generation(
             with torch.no_grad():
                 out = model(input_ids=enc.input_ids, attention_mask=enc.attention_mask, use_cache=True, return_dict=True)
                 
-            first_logits = _safe_score_range_clean(out.logits[:, -1, :], eos_id)
+            first_logits = out.logits[:, -1, :].clone()
+            _safe_score_range_clean(first_logits, eos_id)
             
             slot = _Slot(
                 prompt_idx=prompt_idx,
@@ -710,9 +718,9 @@ def run_continuous_batching_generation(
             )
 
             if monitor is not None:
-                dummy_ids = torch.zeros((max_concurrent_seqs, enc.input_ids.shape[1]), dtype=torch.long, device=device)
+                dummy_ids = torch.empty((max_concurrent_seqs, enc.input_ids.shape[1]), dtype=torch.long, device=device)
                 dummy_ids[slot_idx] = enc.input_ids[0]
-                dummy_logits = torch.zeros((max_concurrent_seqs, first_logits.shape[1]), dtype=first_logits.dtype, device=device)
+                dummy_logits = torch.empty((max_concurrent_seqs, first_logits.shape[1]), dtype=first_logits.dtype, device=device)
                 dummy_logits[slot_idx] = first_logits[0]
                 
                 saved_mask = state.active_mask.clone()
@@ -726,7 +734,7 @@ def run_continuous_batching_generation(
             slot.input_ids = torch.cat([slot.input_ids, next_tok], dim=1)
             slot.attention_mask = torch.ones(1, slot.input_ids.shape[1], dtype=torch.long, device=device)
             slot.n_generated = 1
-            if (next_tok.item() == eos_id) or (slot.n_generated >= AIME_MAX_TOKENS):
+            if (next_tok.item() == eos_id) or (slot.n_generated >= max_new_tokens):
                 slot.done = True
                 
             return slot
@@ -749,7 +757,9 @@ def run_continuous_batching_generation(
         batched_pkv, _ = _stack_and_pad_kv_caches(active_list)
         batched_mask = _stack_and_pad_attention_masks(active_list)
         
+        step_counter = 0
         while any(s is not None for s in slots):
+            step_counter += 1
             # Extract last tokens for current step (O(K))
             batched_last_tokens = torch.cat([s.input_ids[:, -1:] for s in active_list], dim=0) # [K, 1]
             
@@ -768,12 +778,13 @@ def run_continuous_batching_generation(
             # [Strategy C]: In-place reception of appended KV caches, avoiding Python-level pad & cat overhead
             batched_pkv = out.past_key_values
             
-            logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id) # [K, V]
+            logits_2d = out.logits[:, -1, :].clone() # [K, V]
+            _safe_score_range_clean(logits_2d, eos_id) 
             
             if monitor is not None:
                 max_len = batched_mask.shape[1]
-                dummy_ids = torch.zeros((max_concurrent_seqs, max_len), dtype=torch.long, device=device)
-                dummy_logits = torch.zeros((max_concurrent_seqs, logits_2d.shape[1]), dtype=logits_2d.dtype, device=device)
+                dummy_ids = torch.empty((max_concurrent_seqs, max_len), dtype=torch.long, device=device)
+                dummy_logits = torch.empty((max_concurrent_seqs, logits_2d.shape[1]), dtype=logits_2d.dtype, device=device)
                 
                 for list_i, slot_i in enumerate(active_indices):
                     slen = active_list[list_i].input_ids.shape[1]
@@ -798,9 +809,13 @@ def run_continuous_batching_generation(
                 s.attention_mask = torch.cat([s.attention_mask, torch.ones(1, 1, dtype=torch.long, device=device)], dim=1)
                 s.n_generated += 1
                 
-                if (nxt.item() == eos_id) or (s.n_generated >= AIME_MAX_TOKENS):
+                if (nxt.item() == eos_id) or (s.n_generated >= max_new_tokens):
                     s.done = True
                     has_finished = True
+
+            # Trigger periodic garbage collection / padding compaction
+            if step_counter % restack_interval == 0:
+                has_finished = True
 
             # Efficiently prepare mask for the NEXT token generation by appending 1s
             ones_col = torch.ones((len(active_list), 1), dtype=batched_mask.dtype, device=device)
@@ -845,389 +860,9 @@ def run_continuous_batching_generation(
     finally:
         if hook_handle is not None:
             hook_handle.remove()
-
-
-# ======================== Full Experiment Pipeline ========================
-# Replaces run_batched_generation as the primary inference engine.
-#
-# Key invariant: each slot has its own InjectionState, PID, and hook handle,
-# so alpha values are 100% isolated — no cross-slot contamination is possible.
-# Finished slots are immediately refilled, eliminating the straggler problem.
-
-from dataclasses import dataclass, field
-
-
-@dataclass
-class _Slot:
-    """
-    One active decoding slot in the continuous-batching pool.
-
-    Lifecycle:
-        created  → prefill  → decode loop  → done  → result emitted
-    """
-    prompt_idx: int                         # Index into the original prompts list
-    input_ids: torch.Tensor                 # [1, seq_len]  current full sequence
-    attention_mask: torch.Tensor            # [1, seq_len]
-    past_key_values: object                 # KV cache (None before prefill)
-    input_len: int                          # Length of the original prompt
-    n_generated: int = 0                    # Tokens generated so far
-    done: bool = False
-
-    # Per-slot closed-loop state (batch_size=1 throughout)
-    state: object = None                    # InjectionState
-    pid: object = None                      # PIDController | TAEController | None
-    monitor: object = None                  # StateMonitor | None
-    hook_handle: object = None             # PyTorch forward-hook RemovableHandle | None
-
-
-def _build_slot_components(
-    mode: str,
-    control_vector,
-    control_vectors: dict,
-    term_token_id,
-    device: str,
-):
-    """
-    Instantiate InjectionState, PID controller, and StateMonitor for one slot.
-    Returns (state, pid, monitor).
-    """
-    state = InjectionState(batch_size=1, device=device)
-    pid = None
-
-    if mode == "Continuous":
-        state.intervention_active.fill_(True)
-        state.alpha.fill_(CONTINUOUS_ALPHA)
-    elif mode == "Continuous_Linear":
-        state.intervention_active.fill_(True)
-        state.alpha.fill_(CONTINUOUS_LINEAR_ALPHA)
-    elif mode in _DYNAMIC_MODES:
-        if mode in ("True_TAE", "TAE_Spherical"):
-            pid = TAEController(batch_size=1, device=device)
-        else:
-            pid = PIDController(batch_size=1, device=device)
-
-    monitor = None
-    if mode != "Baseline":
-        monitor_margin_tau = -9999.0 if mode == "Dynamic_Spherical_No_ThinkBrake" else None
-        monitor_ema_beta   = 1.0     if mode == "Dynamic_Spherical_No_EMA"              else None
-        use_raw_entropy    = (mode in ("True_TAE", "TAE_Spherical"))
-
-        monitor_kwargs = dict(
-            state=state,
-            pid_controller=pid,
-            term_token_id=term_token_id,
-            use_raw_entropy=use_raw_entropy,
-        )
-        if monitor_margin_tau is not None:
-            monitor_kwargs["margin_tau"] = monitor_margin_tau
-        if monitor_ema_beta is not None:
-            monitor_kwargs["ema_beta"] = monitor_ema_beta
-
-        monitor = StateMonitor(**monitor_kwargs)
-
-    return state, pid, monitor
-
-
-def _register_slot_hook(model, state, control_vector, mode):
-    """Register a steering hook for this slot and return the handle."""
-    if control_vector is None or mode not in _HOOK_MODES:
-        return None
-
-    hook_fn, _ = create_steering_hook(
-        state=state,
-        control_vector=control_vector,
-        mode=mode,
-        continuous_alpha=CONTINUOUS_ALPHA,
-        continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
-        capture_hidden_states=False,   # Never capture in continuous mode (memory)
-    )
-    layer = model.model.layers[LAYER_ID]
-    return layer.register_forward_hook(hook_fn)
-
-
-def _slot_to_result(slot: _Slot, tokenizer) -> dict:
-    """Convert a finished slot into the result dict expected by run_full_experiment."""
-    generated_ids = slot.input_ids[0, slot.input_len:]
-
-    # Strip trailing pad tokens
-    if tokenizer.pad_token_id is not None:
-        mask = generated_ids != tokenizer.pad_token_id
-        generated_ids = generated_ids[mask]
-
-    gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-    tokens   = [tokenizer.decode([t]).replace("\n", "↵") for t in generated_ids]
-
-    state = slot.state
-    has_state = state is not None
-
-    return {
-        "text":               gen_text,
-        "tokens":             tokens,
-        "num_tokens":         len(tokens),
-        "output_ids":         slot.input_ids[0].cpu().tolist(),
-        "input_len":          slot.input_len,
-        "ema_trajectory":     state.ema_trajectory[0]           if has_state else [],
-        "alpha_trajectory":   state.alpha_trajectory[0]         if has_state else [],
-        "entropy_trajectory": state.entropy_trajectory[0]       if has_state else [],
-        "history_hidden":     [],
-        "intervention_start": state.intervention_start_step[0]  if has_state else None,
-        "intervention_end":   state.intervention_end_step[0]    if has_state else None,
-        "convergence":        state.is_converged[0].item()      if has_state else False,
-    }
-
-
-def _safe_score_range_clean(scores: torch.Tensor, eos_id: int) -> torch.Tensor:
-    """In-place NaN/Inf protection (mirrors InfNanProtectionProcessor)."""
-    torch.nan_to_num_(scores, nan=-SAFE_SCORE_RANGE, posinf=SAFE_SCORE_RANGE,
-                      neginf=-SAFE_SCORE_RANGE)
-    max_scores, _ = scores.max(dim=-1)
-    collapsed = max_scores <= (-SAFE_SCORE_RANGE + 1.0)
-    if collapsed.any():
-        scores[collapsed, :] = -SAFE_SCORE_RANGE
-        scores[collapsed, eos_id] = SAFE_SCORE_RANGE
-    return scores
-
-
-def run_continuous_batching_generation(
-    model,
-    tokenizer,
-    prompts: list,
-    mode: str,
-    control_vectors: dict,
-    max_concurrent_seqs: int = MAX_CONCURRENT_SEQS,
-) -> "Generator[list[dict], None, None]":
-    """
-    Continuous-batching inference engine.
-
-    Maintains a pool of `max_concurrent_seqs` active decoding slots.
-    When a slot finishes (EOS or max_new_tokens), its result is collected and the
-    next waiting prompt immediately fills the freed slot — no straggler waiting.
-
-    Each slot owns an isolated InjectionState + PID + hook handle (batch_size=1),
-    ensuring zero cross-slot contamination of alpha values or EMA entropy state.
-
-    Timing contract (identical to model.generate):
-        step t-1 → StateMonitor writes alpha[t-1]
-        step t   → hook reads alpha[t-1], applies SLERP, produces logits[t]
-                 → StateMonitor reads logits[t], writes alpha[t]
-
-    Args:
-        model:               Loaded causal LM.
-        tokenizer:           Tokenizer.
-        prompts:             All formatted prompt message-lists for this experiment.
-        mode:                Experiment mode string.
-        control_vectors:     Dict with 'purified' / 'raw' steering tensors.
-        max_concurrent_seqs: Size of the slot pool (analogous to batch_size).
-
-    Yields:
-        list[dict] — one result dict per prompt, yielded individually (list of 1)
-                     so the caller's batch_start/batch_end bookkeeping still works.
-    """
-    device = model.device
-
-    # Resolve control vector for this mode
-    if mode in ("True_TAE", "Dynamic_Spherical_No_Manifold"):
-        control_vector = control_vectors.get("raw", None)
-    else:
-        control_vector = control_vectors.get("purified", None)
-
-    # Resolve </think> token for ThinkBrake
-    term_token_id = None
-    try:
-        term_ids = tokenizer.encode("</think>", add_special_tokens=False)
-        if term_ids:
-            term_token_id = term_ids[-1]
-    except Exception:
-        pass
-
-    eos_id = tokenizer.eos_token_id
-    if isinstance(eos_id, list):
-        eos_id = eos_id[0]
-
-    # ---- Queue of pending prompts ----
-    from collections import deque
-    pending = deque(range(len(prompts)))
-    active_slots: list[_Slot] = []
-
-    def _prefill_prompt(prompt_idx: int) -> _Slot:
-        """Tokenize, prefill, register hook, return a ready-to-decode Slot."""
-        p = prompts[prompt_idx]
-        text = tokenizer.apply_chat_template(
-            p, tokenize=False, add_generation_prompt=True,
-            enable_thinking=ENABLE_THINKING,
-        )
-        tokenizer.padding_side = "left"
-        enc = tokenizer(text, return_tensors="pt").to(device)
-        tokenizer.padding_side = "right"
-
-        input_len = enc.input_ids.shape[1]
-
-        # Build components for this slot
-        state, pid, monitor = _build_slot_components(
-            mode, control_vector, control_vectors, term_token_id, device
-        )
-
-        slot = _Slot(
-            prompt_idx=prompt_idx,
-            input_ids=enc.input_ids,
-            attention_mask=enc.attention_mask,
-            past_key_values=None,
-            input_len=input_len,
-            state=state,
-            pid=pid,
-            monitor=monitor,
-        )
-
-        # Register hook BEFORE prefill so hook sees the prefill pass
-        slot.hook_handle = _register_slot_hook(model, state, control_vector, mode)
-
-        # ---- Prefill: forward on the full prompt ----
-        with torch.no_grad():
-            out = model(
-                input_ids=slot.input_ids,
-                attention_mask=slot.attention_mask,
-                use_cache=True,
-                return_dict=True,
-            )
-        slot.past_key_values = out.past_key_values
-
-        # Grab first-token logits from the prefill and call StateMonitor now,
-        # so alpha is set before step 0's decode forward.
-        first_logits = out.logits[:, -1:, :]   # [1, 1, V]
-        first_logits_2d = first_logits[:, 0, :]  # [1, V]
-        first_logits_2d = _safe_score_range_clean(first_logits_2d, eos_id)
-
-        if slot.monitor is not None:
-            # current_ids needed by monitor — pass full input_ids for context
-            slot.monitor(slot.input_ids, first_logits_2d)
-
-        # Determine first token by sampling from the prefill logits
-        next_token = _sample_token(first_logits_2d, do_sample=DO_SAMPLE,
-                                   temperature=TEMPERATURE, top_p=TOP_P)
-        # Append first generated token to the running sequence
-        slot.input_ids = torch.cat([slot.input_ids, next_token], dim=1)
-        slot.attention_mask = torch.ones(
-            1, slot.input_ids.shape[1], dtype=torch.long, device=device
-        )
-        slot.n_generated = 1
-
-        if _is_done(next_token, eos_id, slot.n_generated):
-            slot.done = True
-
-        return slot
-
-    def _sample_token(logits_2d: torch.Tensor, do_sample: bool,
-                      temperature: float, top_p: float) -> torch.Tensor:
-        """Sample next token from [1, V] logits. Returns [1, 1] tensor."""
-        if do_sample:
-            # Temperature scaling
-            logits_scaled = logits_2d / max(temperature, 1e-6)
-            # Top-p (nucleus) sampling
-            sorted_logits, sorted_idx = torch.sort(logits_scaled, descending=True, dim=-1)
-            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            # Remove tokens beyond the top-p threshold
-            sorted_remove = cumulative_probs - torch.softmax(sorted_logits, dim=-1) > top_p
-            sorted_logits[sorted_remove] = -float("inf")
-            # Scatter back
-            logits_final = torch.full_like(logits_scaled, -float("inf"))
-            logits_final.scatter_(1, sorted_idx, sorted_logits)
-            probs = torch.softmax(logits_final, dim=-1)
-            # multinomial on [1, V] with num_samples=1 → [1, 1]
-            next_tok = torch.multinomial(probs, num_samples=1)
-        else:
-            # argmax on [1, V] with keepdim=True → [1, 1]
-            next_tok = logits_2d.argmax(dim=-1, keepdim=True)
-        return next_tok  # [1, 1]
-
-
-    def _is_done(next_token: torch.Tensor, eos_id: int, n_generated: int) -> bool:
-        tok_val = next_token.view(-1)[0].item()
-        return (tok_val == eos_id) or (n_generated >= AIME_MAX_TOKENS)
-
-    # ---- Fill initial slot pool ----
-    n_fill = min(max_concurrent_seqs, len(pending))
-    for _ in range(n_fill):
-        slot = _prefill_prompt(pending.popleft())
-        if slot.done:
-            yield [_slot_to_result(slot, tokenizer)]
-            _cleanup_slot(slot)
-            # Immediately fill from pending if available
-            if pending:
-                slot = _prefill_prompt(pending.popleft())
-                if not slot.done:
-                    active_slots.append(slot)
-                else:
-                    yield [_slot_to_result(slot, tokenizer)]
-                    _cleanup_slot(slot)
-        else:
-            active_slots.append(slot)
-
-    # ---- Main decode loop ----
-    while active_slots:
-        next_active = []
-        for slot in active_slots:
-            # -- One decode step for this slot --
-            # Hook is already registered; it reads slot.state.alpha from
-            # the previous StateMonitor call (set in _prefill_prompt or last step).
-            last_token = slot.input_ids[:, -1:]  # [1, 1]
-            with torch.no_grad():
-                out = model(
-                    input_ids=last_token,
-                    attention_mask=slot.attention_mask,
-                    past_key_values=slot.past_key_values,
-                    use_cache=True,
-                    return_dict=True,
-                )
-            slot.past_key_values = out.past_key_values
-
-            logits_2d = out.logits[:, -1, :]  # [1, V]
-            logits_2d = _safe_score_range_clean(logits_2d, eos_id)
-
-            # Update StateMonitor AFTER this forward so alpha is ready for NEXT step
-            if slot.monitor is not None:
-                slot.monitor(slot.input_ids, logits_2d)
-
-            # Sample next token
-            next_token = _sample_token(logits_2d, do_sample=DO_SAMPLE,
-                                       temperature=TEMPERATURE, top_p=TOP_P)
-            slot.n_generated += 1
-
-            # Append to running sequence
-            slot.input_ids = torch.cat([slot.input_ids, next_token], dim=1)
-            slot.attention_mask = torch.ones(
-                1, slot.input_ids.shape[1], dtype=torch.long, device=device
-            )
-
-            if _is_done(next_token, eos_id, slot.n_generated):
-                slot.done = True
-                # Emit result
-                yield [_slot_to_result(slot, tokenizer)]
-                _cleanup_slot(slot)
-
-                # Immediately fill with next pending prompt
-                if pending:
-                    new_slot = _prefill_prompt(pending.popleft())
-                    if new_slot.done:
-                        yield [_slot_to_result(new_slot, tokenizer)]
-                        _cleanup_slot(new_slot)
-                    else:
-                        next_active.append(new_slot)
-                # If no pending left, slot just disappears (pool shrinks)
-            else:
-                next_active.append(slot)
-
-        active_slots = next_active
-
-
-def _cleanup_slot(slot: _Slot):
-    """Remove hook and free GPU memory for a finished slot."""
-    if slot.hook_handle is not None:
-        slot.hook_handle.remove()
-        slot.hook_handle = None
-    # Free KV cache (can be very large for long sequences)
-    slot.past_key_values = None
-    slot.input_ids = None
-    slot.attention_mask = None
+        del state, pid, monitor
+        torch.cuda.empty_cache()
+        gc.collect()
 
 
 # ======================== Full Experiment Pipeline ========================
@@ -1568,11 +1203,24 @@ def main():
     print(f"   Loaded {len(dataset)} problems from {dataset_name} ({dataset_type})")
 
     model_dtype = getattr(torch, DEFAULT_DTYPE)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH,
-        torch_dtype=model_dtype,
-        device_map=DEVICE_MAP,
-    )
+    
+    model_kwargs = {
+        "pretrained_model_name_or_path": MODEL_PATH,
+        "device_map": DEVICE_MAP,
+    }
+    
+    if USE_FP8:
+        # Require Ada/Blackwell architecture
+        model_kwargs["torch_dtype"] = getattr(torch, "float8_e4m3fn", model_dtype)
+    else:
+        model_kwargs["torch_dtype"] = model_dtype
+        
+    if USE_FLASH_ATTENTION:
+        model_kwargs["attn_implementation"] = "flash_attention_2"
+        
+    print(f"\n🚀 Loading model {MODEL_PATH}")
+    print(f"   FP8 Enabled: {USE_FP8} | Flash Attention 2: {USE_FLASH_ATTENTION} | Dtype: {model_kwargs.get('torch_dtype')}")
+    model = AutoModelForCausalLM.from_pretrained(**model_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
     # Ensure pad token is set and DIFFERS from eos_token.

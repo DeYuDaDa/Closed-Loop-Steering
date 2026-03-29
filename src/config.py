@@ -8,11 +8,14 @@ All hyperparameters for the 5-module pipeline are defined here.
 MODEL_PATH = "/root/autodl-tmp/qwen3-8b"
 LAYER_ID = 24                 # Target transformer layer for hook injection
 DEFAULT_DTYPE = "bfloat16"    # Options: "float16", "bfloat16", "float32"
+USE_FP8 = False               # Enable torch.float8_e4m3fn for Ada/Blackwell GPUs
+USE_FLASH_ATTENTION = True    # Enable flash_attention_2 for memory-efficient dense attention
 DEVICE_MAP = "auto"           # Options: "auto", "cuda:0", "cpu"
 ENABLE_THINKING = True
 
 # CUDA Memory Management
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,garbage_collection_threshold:0.7"
+RESTACK_INTERVAL = 128        # Frequency to periodically restack KV caches to reduce padding waste
 
 # ======================== EMA & State Monitor ========================
 EMA_BETA = 0.1                 # EMA smoothing factor (0.1 = 10% current, 90% history)
