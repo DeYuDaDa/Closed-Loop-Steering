@@ -584,6 +584,7 @@ def _slot_to_result(slot: _Slot, state, slot_idx: int, tokenizer) -> dict:
         "num_tokens":         len(tokens),
         "output_ids":         slot.input_ids[0].cpu().tolist(),
         "input_len":          slot.input_len,
+        "prompt_idx":         slot.prompt_idx,
         "ema_trajectory":     state.ema_trajectory[slot_idx] if has_state else [],
         "alpha_trajectory":   state.alpha_trajectory[slot_idx] if has_state else [],
         "entropy_trajectory": state.entropy_trajectory[slot_idx] if has_state else [],
@@ -1451,16 +1452,15 @@ def run_full_experiment(
             max_concurrent_seqs=max_concurrent_seqs
         )
 
-        batch_start = 0
         for batch_results in gen_iterator:
-            batch_end = batch_start + len(batch_results)
-            batch_dataset = dataset[batch_start:batch_end]
+            # Reconstruct the original dataset problems corresponding to these exact results.
+            # Shorter generations finish earlier and thus yield order differs from prompt order.
+            batch_dataset = [dataset[res["prompt_idx"]] for res in batch_results]
             
             # Submits to queue to be processed asynchronously
             results_queue.put((mode, batch_dataset, batch_results, mode_stats, mode_data))
             
             pbar.update(len(batch_results))
-            batch_start = batch_end
             
         pbar.close()
 
