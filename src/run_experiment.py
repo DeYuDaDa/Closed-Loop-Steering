@@ -755,17 +755,25 @@ def run_continuous_batching_generation(
         _K = len(active_list)
         ones_col = torch.ones((_K, 1), dtype=batched_mask.dtype, device=device)
 
-        # [P0 Fix 1]: Pre-allocate dummy monitor buffers (reused every step via zero_()).
-        # We over-provision the seq-len dimension to AIME_MAX_TOKENS so the buffer is
-        # never reallocated as max_len grows step-by-step.
+        # [P0 Fix 1]: Pre-allocate dummy logits buffer (reused every step).
+        # Over-provisioned to max_concurrent_seqs; no reallocation ever needed.
+        # NOTE: dummy_ids is NOT allocated because StateMonitor never reads input_ids;
+        #       we pass a zero-row placeholder tensor of shape [max_concurrent_seqs, 1].
         if monitor is not None:
-            vocab_size = out_vocab_size = model.config.vocab_size
-            dummy_ids_buf    = torch.zeros((max_concurrent_seqs, AIME_MAX_TOKENS + 8192),
-                                           dtype=torch.long, device=device)
+            vocab_size = model.config.vocab_size
             dummy_logits_buf = torch.zeros((max_concurrent_seqs, vocab_size),
                                            dtype=torch.float32, device=device)
+            # Stationary placeholder — monitor interface requires input_ids but ignores it.
+            dummy_ids_placeholder = torch.zeros((max_concurrent_seqs, 1),
+                                                dtype=torch.long, device=device)
         else:
-            dummy_ids_buf = dummy_logits_buf = None
+            dummy_logits_buf = dummy_ids_placeholder = None
+
+        # Pre-compute active_mask for monitor; updated only when slots change (rare).
+        if state is not None:
+            state.active_mask.fill_(False)
+            for idx in active_indices:
+                state.active_mask[idx] = True
 
         eos_id_tensor = torch.tensor(eos_id, dtype=torch.long, device=device)
 
@@ -791,22 +799,12 @@ def run_continuous_batching_generation(
             logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id) # [K, V]
             
             if monitor is not None:
-                # [P0 Fix 1]: Reuse pre-allocated buffers; zero_ avoids any CUDA realloc.
-                cur_len = batched_mask.shape[1]   # current sequence length
-                dummy_ids_buf.zero_()
-                dummy_logits_buf.zero_()
+                # [P1 Fix]: Write only active-slot logits — no zero_() of the full buffer.
+                # Inactive slots are filtered by state.active_mask, so stale values are harmless.
                 for list_i, slot_i in enumerate(active_indices):
-                    slen = active_list[list_i].input_ids.shape[1]
-                    dummy_ids_buf[slot_i, :slen] = active_list[list_i].input_ids[0]
                     dummy_logits_buf[slot_i] = logits_2d[list_i]
-                # Pass exact-length views (no copy — just a strided slice)
-                dummy_ids_view = dummy_ids_buf[:, :cur_len]
-
-                saved_mask = state.active_mask.clone()
-                state.active_mask.fill_(False)
-                state.active_mask[active_indices] = True
-                monitor(dummy_ids_view, dummy_logits_buf)
-                state.active_mask = saved_mask
+                # input_ids placeholder is never read by StateMonitor — pass the stub.
+                monitor(dummy_ids_placeholder, dummy_logits_buf)
                 
             next_tokens = _sample_batch_tokens(logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P) # [K, 1]
 
@@ -877,6 +875,11 @@ def run_continuous_batching_generation(
                 # Refresh pre-allocated hot-path tensors to match new active count
                 _K = len(active_list)
                 ones_col = torch.ones((_K, 1), dtype=batched_mask.dtype, device=device)
+                # Sync active_mask to the new slot layout (no save/restore needed in hot-path)
+                if state is not None:
+                    state.active_mask.fill_(False)
+                    for idx in active_indices:
+                        state.active_mask[idx] = True
     finally:
         if hook_handle is not None:
             hook_handle.remove()
