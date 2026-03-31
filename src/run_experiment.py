@@ -1005,6 +1005,7 @@ def _slot_to_result(slot: _Slot, tokenizer) -> dict:
         "num_tokens":         len(tokens),
         "output_ids":         slot.input_ids[0].cpu().tolist(),
         "input_len":          slot.input_len,
+        "prompt_idx":         slot.prompt_idx,
         "ema_trajectory":     state.ema_trajectory[0]           if has_state else [],
         "alpha_trajectory":   state.alpha_trajectory[0]         if has_state else [],
         "entropy_trajectory": state.entropy_trajectory[0]       if has_state else [],
