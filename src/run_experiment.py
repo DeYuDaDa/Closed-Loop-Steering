@@ -603,7 +603,10 @@ def _safe_score_range_clean(scores: torch.Tensor, eos_id: int) -> torch.Tensor:
         scores[collapsed, eos_id] = SAFE_SCORE_RANGE
     return scores
 
-def run_continuous_batching_generation(
+# NOTE: This first definition was the Strategy-C batched implementation.
+# It is SUPERSEDED by the improved per-slot engine below (same function name,
+# Python uses the later definition). Kept for reference ONLY — never executed.
+def _run_batched_strategy_c_deprecated(
     model,
     tokenizer,
     prompts: list,
@@ -1084,13 +1087,49 @@ def run_continuous_batching_generation(
     if isinstance(eos_id, list):
         eos_id = eos_id[0]
 
+    # ---- One shared hook, proxy-dispatched to the current slot ----
+    # Root cause of cross-slot bug: if each slot registers its own hook on the
+    # SAME model layer, all K hooks fire on EVERY forward pass, effectively
+    # applying K× the intended steering to each slot's hidden states.
+    #
+    # Fix: register exactly ONE hook whose state pointer is swapped to the
+    # currently-decoding slot before each model() call.  All per-slot state
+    # objects (InjectionState / PID / EMA) remain perfectly isolated.
+    class _StateProxy:
+        """Transparent proxy that forwards attribute access to the active slot's state."""
+        def __init__(self):
+            object.__setattr__(self, '_current', None)
+        def _set(self, state):
+            object.__setattr__(self, '_current', state)
+        def __getattr__(self, name):
+            return getattr(object.__getattribute__(self, '_current'), name)
+        def __setattr__(self, name, value):
+            setattr(object.__getattribute__(self, '_current'), name, value)
+
+    state_proxy = _StateProxy()
+    shared_hook_handle = None
+    if control_vector is not None and mode in _HOOK_MODES:
+        hook_fn, _ = create_steering_hook(
+            state=state_proxy,
+            control_vector=control_vector,
+            mode=mode,
+            continuous_alpha=CONTINUOUS_ALPHA,
+            continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
+            capture_hidden_states=False,
+        )
+        layer = model.model.layers[LAYER_ID]
+        shared_hook_handle = layer.register_forward_hook(hook_fn)
+
     # ---- Queue of pending prompts ----
     from collections import deque
     pending = deque(range(len(prompts)))
     active_slots: list[_Slot] = []
 
     def _prefill_prompt(prompt_idx: int) -> _Slot:
-        """Tokenize, prefill, register hook, return a ready-to-decode Slot."""
+        """Tokenize, prefill, return a ready-to-decode Slot.
+        Note: NO per-slot hook registration — a single shared hook (state_proxy)
+        handles all steering to eliminate cross-slot interference.
+        """
         p = prompts[prompt_idx]
         text = tokenizer.apply_chat_template(
             p, tokenize=False, add_generation_prompt=True,
@@ -1117,9 +1156,12 @@ def run_continuous_batching_generation(
             pid=pid,
             monitor=monitor,
         )
+        # No hook_handle per slot — shared hook is managed by the outer function.
+        slot.hook_handle = None
 
-        # Register hook BEFORE prefill so hook sees the prefill pass
-        slot.hook_handle = _register_slot_hook(model, state, control_vector, mode)
+        # Point shared hook at this slot's state for the prefill forward.
+        # (Hook returns early for seq_len > 1, so this is safe but harmless.)
+        state_proxy._set(state)
 
         # ---- Prefill: forward on the full prompt ----
         with torch.no_grad():
@@ -1203,67 +1245,73 @@ def run_continuous_batching_generation(
             active_slots.append(slot)
 
     # ---- Main decode loop ----
-    while active_slots:
-        next_active = []
-        for slot in active_slots:
-            # -- One decode step for this slot --
-            # Hook is already registered; it reads slot.state.alpha from
-            # the previous StateMonitor call (set in _prefill_prompt or last step).
-            last_token = slot.input_ids[:, -1:]  # [1, 1]
-            with torch.no_grad():
-                out = model(
-                    input_ids=last_token,
-                    attention_mask=slot.attention_mask,
-                    past_key_values=slot.past_key_values,
-                    use_cache=True,
-                    return_dict=True,
+    try:
+        while active_slots:
+            next_active = []
+            for slot in active_slots:
+                # -- One decode step for this slot --
+                # Point shared hook at THIS slot's state BEFORE the forward pass.
+                # This ensures only slot.state.alpha is applied — no cross-contamination.
+                state_proxy._set(slot.state)
+
+                last_token = slot.input_ids[:, -1:]  # [1, 1]
+                with torch.no_grad():
+                    out = model(
+                        input_ids=last_token,
+                        attention_mask=slot.attention_mask,
+                        past_key_values=slot.past_key_values,
+                        use_cache=True,
+                        return_dict=True,
+                    )
+                slot.past_key_values = out.past_key_values
+
+                logits_2d = out.logits[:, -1, :]  # [1, V]
+                logits_2d = _safe_score_range_clean(logits_2d, eos_id)
+
+                # Update StateMonitor AFTER this forward so alpha is ready for NEXT step
+                if slot.monitor is not None:
+                    slot.monitor(slot.input_ids, logits_2d)
+
+                # Sample next token
+                next_token = _sample_token(logits_2d, do_sample=DO_SAMPLE,
+                                           temperature=TEMPERATURE, top_p=TOP_P)
+                slot.n_generated += 1
+
+                # Append to running sequence
+                slot.input_ids = torch.cat([slot.input_ids, next_token], dim=1)
+                slot.attention_mask = torch.ones(
+                    1, slot.input_ids.shape[1], dtype=torch.long, device=device
                 )
-            slot.past_key_values = out.past_key_values
 
-            logits_2d = out.logits[:, -1, :]  # [1, V]
-            logits_2d = _safe_score_range_clean(logits_2d, eos_id)
+                if _is_done(next_token, eos_id, slot.n_generated):
+                    slot.done = True
+                    # Emit result
+                    yield [_slot_to_result(slot, tokenizer)]
+                    _cleanup_slot(slot)
 
-            # Update StateMonitor AFTER this forward so alpha is ready for NEXT step
-            if slot.monitor is not None:
-                slot.monitor(slot.input_ids, logits_2d)
+                    # Immediately fill with next pending prompt
+                    if pending:
+                        new_slot = _prefill_prompt(pending.popleft())
+                        if new_slot.done:
+                            yield [_slot_to_result(new_slot, tokenizer)]
+                            _cleanup_slot(new_slot)
+                        else:
+                            next_active.append(new_slot)
+                    # If no pending left, slot just disappears (pool shrinks)
+                else:
+                    next_active.append(slot)
 
-            # Sample next token
-            next_token = _sample_token(logits_2d, do_sample=DO_SAMPLE,
-                                       temperature=TEMPERATURE, top_p=TOP_P)
-            slot.n_generated += 1
-
-            # Append to running sequence
-            slot.input_ids = torch.cat([slot.input_ids, next_token], dim=1)
-            slot.attention_mask = torch.ones(
-                1, slot.input_ids.shape[1], dtype=torch.long, device=device
-            )
-
-            if _is_done(next_token, eos_id, slot.n_generated):
-                slot.done = True
-                # Emit result
-                yield [_slot_to_result(slot, tokenizer)]
-                _cleanup_slot(slot)
-
-                # Immediately fill with next pending prompt
-                if pending:
-                    new_slot = _prefill_prompt(pending.popleft())
-                    if new_slot.done:
-                        yield [_slot_to_result(new_slot, tokenizer)]
-                        _cleanup_slot(new_slot)
-                    else:
-                        next_active.append(new_slot)
-                # If no pending left, slot just disappears (pool shrinks)
-            else:
-                next_active.append(slot)
-
-        active_slots = next_active
+            active_slots = next_active
+    finally:
+        # Guaranteed cleanup: remove the shared hook even if an exception occurred
+        if shared_hook_handle is not None:
+            shared_hook_handle.remove()
 
 
 def _cleanup_slot(slot: _Slot):
-    """Remove hook and free GPU memory for a finished slot."""
-    if slot.hook_handle is not None:
-        slot.hook_handle.remove()
-        slot.hook_handle = None
+    """Free GPU memory for a finished slot.
+    No hook removal needed — slots no longer carry per-slot hooks.
+    """
     # Free KV cache (can be very large for long sequences)
     slot.past_key_values = None
     slot.input_ids = None
