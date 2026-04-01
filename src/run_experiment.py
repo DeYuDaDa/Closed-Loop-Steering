@@ -239,12 +239,21 @@ def _stack_and_pad_kv_caches(slots: list):
     # KV length = current full sequence length minus the last token
     # (the last token is the one we are about to feed in this step)
     max_len = max(s.input_ids.shape[1] - 1 for s in slots)
-    num_layers = len(slots[0].past_key_values)
+    
+    pkv_0 = slots[0].past_key_values
+    is_dynamic = hasattr(pkv_0, "key_cache")
+    num_layers = len(pkv_0.key_cache) if is_dynamic else len(pkv_0)
+    
     batched_pkv = []
     for layer_idx in range(num_layers):
         layer_k, layer_v = [], []
         for s in slots:
-            k, v = s.past_key_values[layer_idx]
+            pkv = s.past_key_values
+            if hasattr(pkv, "key_cache"):
+                k, v = pkv.key_cache[layer_idx], pkv.value_cache[layer_idx]
+            else:
+                k, v = pkv[layer_idx]
+                
             pad_left = max_len - k.shape[2]
             if pad_left > 0:
                 k = torch.nn.functional.pad(k, (0, 0, pad_left, 0), value=0.0)
@@ -259,17 +268,24 @@ def _unpad_and_split_kv_caches(batched_pkv, slots: list):
     """Split batched KV cache (from model output) back into per-slot caches.
     Called only when a slot finishes and the batch must be restructured.
     """
-    num_layers = len(batched_pkv)
+    is_dynamic = hasattr(batched_pkv, "key_cache")
+    num_layers = len(batched_pkv.key_cache) if is_dynamic else len(batched_pkv)
+    
     for i, s in enumerate(slots):
         # s.input_ids already has the newly sampled token appended,
         # so the valid KV length in batched_pkv is input_ids.shape[1] - 1
         valid_kv_len = s.input_ids.shape[1] - 1
         slot_pkv = []
         for layer_idx in range(num_layers):
-            k = batched_pkv[layer_idx][0][i:i+1, :, -valid_kv_len:, :]
-            v = batched_pkv[layer_idx][1][i:i+1, :, -valid_kv_len:, :]
+            if is_dynamic:
+                k = batched_pkv.key_cache[layer_idx][i:i+1, :, -valid_kv_len:, :]
+                v = batched_pkv.value_cache[layer_idx][i:i+1, :, -valid_kv_len:, :]
+            else:
+                k = batched_pkv[layer_idx][0][i:i+1, :, -valid_kv_len:, :]
+                v = batched_pkv[layer_idx][1][i:i+1, :, -valid_kv_len:, :]
             slot_pkv.append((k, v))
         s.past_key_values = tuple(slot_pkv)
+
 
 
 def _stack_and_pad_attention_masks(slots: list):
