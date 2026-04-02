@@ -43,6 +43,12 @@ class PIDController:
         ki: float = PID_KI,
         kd: float = PID_KD,
         alpha_max: float = ALPHA_MAX,
+        kp_min: float = 0.5,
+        kp_max: float = 2.5,
+        e_mid: float = 0.05,
+        lambda_val: float = 40.0,
+        use_dynamic_gain: bool = True,
+        use_soft_clip: bool = True,
     ):
         self.batch_size = batch_size
         self.device = device
@@ -51,6 +57,14 @@ class PIDController:
         self.ki = ki
         self.kd = kd
         self.alpha_max = alpha_max
+        
+        # Adaptive PD parameters
+        self.kp_min = kp_min
+        self.kp_max = kp_max
+        self.e_mid = e_mid
+        self.lambda_val = lambda_val
+        self.use_dynamic_gain = use_dynamic_gain
+        self.use_soft_clip = use_soft_clip
 
         # Internal state (Batched)
         self.prev_error: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
@@ -58,7 +72,7 @@ class PIDController:
 
     def step(self, entropy: torch.Tensor, active_mask: torch.Tensor, is_converged: torch.Tensor) -> torch.Tensor:
         """
-        Compute one PID step with anti-windup protection for the whole batch.
+        Compute one PID step with adaptive PD and soft clipping for the batch.
 
         Args:
             entropy: Current EMA entropy tensor [batch_size].
@@ -66,17 +80,31 @@ class PIDController:
             is_converged: Boolean tensor [batch_size] from ThinkBrake convergence latch.
 
         Returns:
-            alpha: Rotation angle tensor [batch_size], clamped to [0, alpha_max].
+            alpha: Rotation angle tensor [batch_size], bounded by [0, alpha_max].
         """
-        # Error: positive when entropy exceeds setpoint (model is confused)
-        error = entropy - self.setpoint
+        # 1. Base error: e_t = max(0, EMA_t - SetPoint)
+        # Clamped at 0 to avoid negative intervention when entropy is below threshold.
+        error = torch.clamp(entropy - self.setpoint, min=0.0)
 
-        # Proportional term
-        P = self.kp * error
+        # 2. Adaptive Proportional Gain (K_p)
+        if self.use_dynamic_gain and self.lambda_val > 0.0:
+            # K_p(e_t) = Kp_min + (Kp_max - Kp_min) / (1 + exp(-lambda * (e_t - e_mid)))
+            dynamic_kp = self.kp_min + (self.kp_max - self.kp_min) / (1.0 + torch.exp(-self.lambda_val * (error - self.e_mid)))
+            P = dynamic_kp * error
+        else:
+            P = self.kp * error
 
-        # Derivative term (based on previous error before integral update)
+        # Derivative term
         D = self.kd * (error - self.prev_error)
 
+        # Update previous error only for active sequences
+        self.prev_error = torch.where(
+            active_mask,
+            error,
+            self.prev_error
+        )
+
+        # Integral term (Kept for backwards compatibility, mostly 0 in PD)
         # Anti-Windup via Conditional Integration:
         raw_output = P + self.integral + D
         
@@ -98,20 +126,17 @@ class PIDController:
             self.integral
         )
 
-        # Update previous error only for active sequences
-        self.prev_error = torch.where(
-            active_mask,
-            error,
-            self.prev_error
-        )
+        # 3. Raw Output Calculation: u_t = max(0, P_t + I_t + D_t)
+        u_t = torch.clamp(P + self.integral + D, min=0.0)
 
-        # Final output
-        alpha = P + self.integral + D
+        # 4. Tanh Soft Clipping Protection
+        if self.use_soft_clip:
+            alpha = self.alpha_max * torch.tanh(u_t / self.alpha_max)
+        else:
+            # Fall back to hard clamping
+            alpha = torch.clamp(u_t, min=0.0, max=self.alpha_max)
 
-        # Clamp to [0, alpha_max]
-        alpha = torch.clamp(alpha, min=0.0, max=self.alpha_max)
-
-        # ThinkBrake Hard Cutoff: if converged, force alpha to 0
+        # 5. ThinkBrake Hard Cutoff: if converged, force alpha to 0
         alpha = torch.where(
             is_converged,
             torch.zeros_like(alpha),
