@@ -20,6 +20,9 @@ from config import (
     ENTROPY_THRESHOLD,
     EMA_BETA,
     CONVERGENCE_MARGIN_TAU,
+    COLLAPSE_ENTROPY_MIN,
+    COLLAPSE_COUNT_THRESHOLD,
+    N_GRAM_K,
 )
 
 
@@ -62,6 +65,11 @@ class InjectionState:
         # --- Intervention window tracking (Batched) ---
         self.intervention_start_step: list[int | None] = [None] * self.batch_size
         self.intervention_end_step: list[int | None] = [None] * self.batch_size
+
+        # --- Anti-Collapse Watchdog (Batched) ---
+        self.low_entropy_count: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.int32, device=self.device)
+        self.trigger_perturbation: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        self.cooldown_counter: torch.Tensor = torch.zeros(self.batch_size, dtype=torch.int32, device=self.device)
 
 
 class StateMonitor(LogitsProcessor):
@@ -182,6 +190,44 @@ class StateMonitor(LogitsProcessor):
                 else self.state.ema_entropy
             )
             alpha = self.pid.step(controller_input, self.state.active_mask, self.state.is_converged)
+            
+            # --- 3.1 Anti-Collapse Watchdog (Repetition + Low Entropy Detection) ---
+            # 1. Low Entropy Count
+            is_low_entropy = (H_t < COLLAPSE_ENTROPY_MIN) & self.state.active_mask
+            self.state.low_entropy_count = torch.where(
+                is_low_entropy,
+                self.state.low_entropy_count + 1,
+                torch.zeros_like(self.state.low_entropy_count)
+            )
+            
+            # 2. Local Repetition Detection (N-Gram cycle check over last max_period tokens)
+            is_repeating = torch.zeros(batch_size, dtype=torch.bool, device=self.state.device)
+            seq_len = input_ids.shape[1]
+            max_period = N_GRAM_K * 2
+            for p in range(1, max_period + 1):
+                if seq_len >= 2 * p:
+                    match = (input_ids[:, -p:] == input_ids[:, -2*p:-p]).all(dim=-1)
+                    is_repeating = is_repeating | match
+
+            # 3. Trigger condition
+            should_trigger = (self.state.low_entropy_count > COLLAPSE_COUNT_THRESHOLD) & is_repeating & self.state.active_mask
+            
+            # We only trigger if NOT currently on cooldown
+            self.state.trigger_perturbation = should_trigger & (self.state.cooldown_counter == 0)
+            
+            # 4. Handle Cooldown overrides
+            in_cooldown = (self.state.cooldown_counter > 0) & self.state.active_mask
+            self.state.cooldown_counter = torch.where(
+                in_cooldown,
+                self.state.cooldown_counter - 1,
+                torch.zeros_like(self.state.cooldown_counter)
+            )
+            
+            # If triggered or in cooldown, PID alpha is forcefully suppressed to 0, 
+            # allowing the model (or perturbation) to navigate freely without PID drag.
+            suppress_mask = self.state.trigger_perturbation | in_cooldown
+            alpha = torch.where(suppress_mask, torch.zeros_like(alpha), alpha)
+            
             self.state.alpha = alpha
 
             # Track intervention window (Vectorized):

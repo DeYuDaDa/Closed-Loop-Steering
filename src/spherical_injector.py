@@ -19,7 +19,14 @@ Mathematical formulation (Gram-Schmidt + rotation):
 
 import torch
 import math
-from config import MATH_EPSILON, CONTINUOUS_ALPHA, CONTINUOUS_LINEAR_ALPHA, CAPTURE_HIDDEN_STATES
+from config import (
+    MATH_EPSILON, 
+    CONTINUOUS_ALPHA, 
+    CONTINUOUS_LINEAR_ALPHA, 
+    CAPTURE_HIDDEN_STATES,
+    PERTURBATION_GAMMA,
+    PERTURBATION_COOLDOWN_STEPS
+)
 
 
 def spherical_rotate(
@@ -205,11 +212,19 @@ def create_steering_hook(
         else:
             return output
 
+        trigger_mask = None
+        has_perturb = False
+        if hasattr(state, "trigger_perturbation"):
+            trigger_mask = state.trigger_perturbation
+            if hasattr(state, "active_batch_indices") and state.active_batch_indices is not None:
+                trigger_mask = trigger_mask[state.active_batch_indices]
+            has_perturb = isinstance(trigger_mask, torch.Tensor) and trigger_mask.any().item()
+
         # For scalar alpha (Continuous / Continuous_Linear mode)
-        if isinstance(alpha, (float, int)) and alpha <= 0:
+        if isinstance(alpha, (float, int)) and alpha <= 0 and not has_perturb:
             return output
         # For tensor alpha (Dynamic_Spherical mode)
-        elif isinstance(alpha, torch.Tensor) and (alpha <= 0).all():
+        elif isinstance(alpha, torch.Tensor) and (alpha <= 0).all() and not has_perturb:
             return output
 
         # Align control vector to device/dtype of hidden state
@@ -240,6 +255,39 @@ def create_steering_hook(
         else:
             # All spherical modes: Continuous, Dynamic_*, TAE_Spherical
             h_new = spherical_rotate(h, v, alpha)
+
+        # Apply Orthogonal Perturbation for sequences that collapsed
+        if has_perturb:
+            mask_expanded = trigger_mask.view(-1, 1, 1).expand_as(h_new)
+            
+            # Generate normal noise
+            noise = torch.randn_like(h_new)
+            
+            # Gram-Schmidt: make noise orthogonal to h_new
+            h_norm2 = torch.sum(h_new * h_new, dim=-1, keepdim=True).clamp_min(1e-6)
+            proj = torch.sum(noise * h_new, dim=-1, keepdim=True) / h_norm2
+            z = noise - proj * h_new
+            
+            z_unit = z / torch.norm(z, dim=-1, keepdim=True).clamp_min(1e-6)
+            
+            # Sideways push preserving norm
+            gamma = PERTURBATION_GAMMA
+            h_orig_norm = torch.norm(h_new, dim=-1, keepdim=True).clamp_min(1e-6)
+            h_pushed = h_new + gamma * h_orig_norm * z_unit
+            h_pushed = h_pushed / torch.norm(h_pushed, dim=-1, keepdim=True).clamp_min(1e-6) * h_orig_norm
+            
+            h_new = torch.where(mask_expanded, h_pushed, h_new)
+            
+            # Reset triggers, start cooldown
+            if hasattr(state, "active_batch_indices") and state.active_batch_indices is not None:
+                # physical_idx translates relative batch indices back to physical state indices
+                active_idx_tensor = torch.tensor(state.active_batch_indices, device=trigger_mask.device)
+                physical_idx = active_idx_tensor[trigger_mask]
+                state.trigger_perturbation[physical_idx] = False
+                state.cooldown_counter[physical_idx] = PERTURBATION_COOLDOWN_STEPS
+            else:
+                state.trigger_perturbation[trigger_mask] = False
+                state.cooldown_counter[trigger_mask] = PERTURBATION_COOLDOWN_STEPS
 
         # Write back
         hidden = hidden.clone()

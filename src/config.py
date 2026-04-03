@@ -25,6 +25,14 @@ MATH_EPSILON = 1e-6           # Generic epsilon for geometry/clamping
 CONVERGENCE_MARGIN_TAU = 0.25  # Margin threshold for convergence detection
 # The token id of </think> — will be resolved at runtime from the tokenizer
 
+# ======================== Anti-Collapse Mechanism ========================
+COLLAPSE_ENTROPY_MIN = 0.02           # Threshold below which entropy is considered "collapsed"
+COLLAPSE_COUNT_THRESHOLD = 10          # Number of continuous steps below min entropy to trigger watchdog
+PERTURBATION_GAMMA = 0.1              # Strength of the orthogonal noise perturbation (sideways kick)
+PERTURBATION_COOLDOWN_STEPS = 3       # Number of steps to freeze PD intervention after a kick
+N_GRAM_K = 3                          # Sequence match length for repetition detection
+
+
 # ======================== PID Controller ========================
 PID_KP = 2.0                  # Proportional gain 0.6
 PID_KI = 0                  # Integral gain

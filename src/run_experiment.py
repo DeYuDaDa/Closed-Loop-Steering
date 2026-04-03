@@ -566,6 +566,11 @@ def run_continuous_batching_generation(
                 pid.integral[slot_idx] = 0.0
             if hasattr(pid, "prev_error"):
                 pid.prev_error[slot_idx] = 0.0
+                
+        if hasattr(state, "low_entropy_count"):
+            state.low_entropy_count[slot_idx] = 0
+            state.trigger_perturbation[slot_idx] = False
+            state.cooldown_counter[slot_idx] = 0
 
     def _prefill_slot(slot_idx: int, prompt_idx: int) -> _Slot:
         """Tokenise + prefill one prompt into physical slot slot_idx."""
