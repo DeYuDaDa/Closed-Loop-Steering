@@ -39,6 +39,17 @@ PID_KI = 0                  # Integral gain
 PID_KD = 0.5                 # Derivative gain
 ALPHA_MAX = 0.45              # Maximum rotation angle (radians), ~17 degrees
 
+# ======================== EAST: Entropy-Scaled Steering (方案一) ========================
+# Reference: Entropic Activation Steering (arXiv:2406.00244)
+# α'_t = α_t * sigmoid_decay(EMA_t; θ_high) * (1 - normalized_entropy(H_t))
+# When EMA_t >> θ_high (model confused), α'_t → 0 (avoid "surface hijacking").
+# When EMA_t < θ_high (model on track), α'_t ≈ α_t (full steering power).
+EAST_ENABLED = True           # Master switch for entropy-scaled steering
+EAST_LAMBDA_SCALE = 10.0      # Sigmoid steepness around θ_high (higher = sharper cutoff)
+EAST_HIGH_ENTROPY_THETA = 0.45  # Entropy threshold above which steering decays (mid-high confusion zone)
+EAST_H_MIN = 0.0              # Min entropy for normalization (typically 0)
+EAST_H_MAX = 1.0              # Max entropy for normalization (log-normalized to 0-1 range)
+
 # ======================== Manifold Projection ========================
 PCA_N_COMPONENTS = 10         # Number of principal components to retain
 
@@ -64,6 +75,8 @@ VECTOR_DIR = "./vectors/qwen3-8b"
 DO_SAMPLE = True
 TEMPERATURE = 0.7
 TOP_P = 0.95
+TOP_K = 20                    # Hard cap on sampling pool (0 = disabled). Prevents long-tail noise tokens.
+MIN_P = 0.05                  # Dynamic floor: discard tokens with P < min_p * P_max. Adapts to model confidence.
 MAX_NEW_TOKENS = 4096
 ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection

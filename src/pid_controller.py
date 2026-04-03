@@ -22,7 +22,11 @@ Anti-Windup:
 """
 
 import torch
-from config import PID_KP, PID_KI, PID_KD, ALPHA_MAX, ENTROPY_THRESHOLD
+from config import (
+    PID_KP, PID_KI, PID_KD, ALPHA_MAX, ENTROPY_THRESHOLD,
+    EAST_ENABLED, EAST_LAMBDA_SCALE, EAST_HIGH_ENTROPY_THETA,
+    EAST_H_MIN, EAST_H_MAX,
+)
 
 
 class PIDController:
@@ -49,6 +53,12 @@ class PIDController:
         lambda_val: float = 40.0,
         use_dynamic_gain: bool = True,
         use_soft_clip: bool = True,
+        # EAST parameters
+        east_enabled: bool = EAST_ENABLED,
+        east_lambda: float = EAST_LAMBDA_SCALE,
+        east_theta: float = EAST_HIGH_ENTROPY_THETA,
+        east_h_min: float = EAST_H_MIN,
+        east_h_max: float = EAST_H_MAX,
     ):
         self.batch_size = batch_size
         self.device = device
@@ -65,6 +75,15 @@ class PIDController:
         self.lambda_val = lambda_val
         self.use_dynamic_gain = use_dynamic_gain
         self.use_soft_clip = use_soft_clip
+
+        # EAST: Entropy-Scaled Steering (方案一, arXiv:2406.00244)
+        # When EMA_t > theta_high (model confused / high-entropy), alpha is suppressed toward 0.
+        # This prevents Steering from "surface hijacking" the flat probability landscape.
+        self.east_enabled = east_enabled
+        self.east_lambda   = east_lambda
+        self.east_theta    = east_theta
+        self.east_h_min    = east_h_min
+        self.east_h_max    = east_h_max
 
         # Internal state (Batched)
         self.prev_error: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
@@ -136,7 +155,24 @@ class PIDController:
             # Fall back to hard clamping
             alpha = torch.clamp(u_t, min=0.0, max=self.alpha_max)
 
-        # 5. ThinkBrake Hard Cutoff: if converged, force alpha to 0
+        # 5. EAST: Entropy-Scaled Steering (方案一)
+        # Suppresses alpha when EMA entropy is in the mid-to-high range (0.35–0.65),
+        # preventing the steering vector from "surface hijacking" the flat probability
+        # landscape and forcing degenerate surface tokens (Let/Wait/me).
+        #
+        # α'_t = α_t · sigmoid_decay · (1 - H_normalized)
+        #   sigmoid_decay  = σ(-λ · (EMA_t - θ_high))  → 1 when EMA_t << θ_high,  0 when EMA_t >> θ_high
+        #   H_normalized   = clip((H_t - H_min)/(H_max - H_min), 0, 1)
+        if self.east_enabled:
+            # Component 1: sigmoid decay — hard gate around theta_high
+            sigmoid_decay = torch.sigmoid(-self.east_lambda * (entropy - self.east_theta))
+            # Component 2: normalized entropy weight — smooth attenuation
+            h_range = max(self.east_h_max - self.east_h_min, 1e-6)
+            h_norm = ((entropy - self.east_h_min) / h_range).clamp(0.0, 1.0)
+            east_scale = sigmoid_decay * (1.0 - h_norm)
+            alpha = alpha * east_scale
+
+        # 6. ThinkBrake Hard Cutoff: if converged, force alpha to 0
         alpha = torch.where(
             is_converged,
             torch.zeros_like(alpha),

@@ -72,6 +72,8 @@ from config import (
     MAX_CONCURRENT_SEQS,
     TEMPERATURE,
     TOP_P,
+    TOP_K,
+    MIN_P,
     DEFAULT_DTYPE,
     DEVICE_MAP,
     DO_SAMPLE,
@@ -451,16 +453,50 @@ def _sample_batch_tokens(
     do_sample: bool,
     temperature: float,
     top_p: float,
+    top_k: int = 0,
+    min_p: float = 0.0,
 ) -> torch.Tensor:
-    """Sample next tokens for a [K, V] logit matrix. Returns [K, 1]."""
+    """Sample next tokens for a [K, V] logit matrix. Returns [K, 1].
+
+    Sampling pipeline (in order):
+      1. Temperature scaling
+      2. Top-K hard cap  (if top_k > 0)
+      3. Min-P dynamic floor  (if min_p > 0.0)
+         Discard tokens where P < min_p * P_max.
+         Adapts to model confidence: strict when confident, lenient when uncertain.
+      4. Top-P nucleus filter  (if top_p < 1.0)
+      5. Softmax + multinomial draw
+    """
     if do_sample:
         logits_scaled = logits_2d / max(temperature, 1e-6)
+
+        # --- Stage 1: Top-K hard cap ---
+        # Physically removes all tokens outside the top-k, preventing long-tail
+        # noise from polluting the nucleus under any Top-P setting.
+        if top_k > 0:
+            top_k_effective = min(top_k, logits_scaled.size(-1))
+            kth_vals = torch.topk(logits_scaled, top_k_effective, dim=-1)[0][..., -1, None]
+            logits_scaled = logits_scaled.masked_fill(logits_scaled < kth_vals, -float("inf"))
+
+        # --- Stage 2: Min-P dynamic floor ---
+        # Threshold = min_p * P_max:  tight when the model is confident (high P_max),
+        # relaxed when the model is uncertain (low P_max).
+        # This breaks degeneration cascades by preventing low-quality tokens from
+        # re-entering the pool after context contamination.
+        if min_p > 0.0:
+            probs_tmp = torch.softmax(logits_scaled, dim=-1)
+            top_prob = probs_tmp.max(dim=-1, keepdim=True)[0]  # [K, 1]
+            scaled_min_p = min_p * top_prob
+            logits_scaled = logits_scaled.masked_fill(probs_tmp < scaled_min_p, -float("inf"))
+
+        # --- Stage 3: Top-P nucleus filter ---
         sorted_logits, sorted_idx = torch.sort(logits_scaled, descending=True, dim=-1)
         cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
         sorted_remove = cumulative_probs - torch.softmax(sorted_logits, dim=-1) > top_p
         sorted_logits[sorted_remove] = -float("inf")
         logits_final = torch.full_like(logits_scaled, -float("inf"))
         logits_final.scatter_(1, sorted_idx, sorted_logits)
+
         probs = torch.softmax(logits_final, dim=-1)
         next_tok = torch.multinomial(probs, num_samples=1)  # [K, 1]
     else:
@@ -628,7 +664,7 @@ def run_continuous_batching_generation(
             state.active_mask = saved_mask
 
         # Sample the very first token from the prefill logits.
-        first_tok = _sample_batch_tokens(first_logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P)  # [1, 1]
+        first_tok = _sample_batch_tokens(first_logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)  # [1, 1]
         slot.input_ids = torch.cat([slot.input_ids, first_tok], dim=1)
         slot.attention_mask = torch.ones(
             1, slot.input_ids.shape[1], dtype=torch.long, device=device
@@ -712,7 +748,7 @@ def run_continuous_batching_generation(
                 monitor(dummy_ids_buf, dummy_logits_buf)
 
             # GPU-side EOS / max-len detection (single CPU sync).
-            next_tokens = _sample_batch_tokens(logits_K, DO_SAMPLE, TEMPERATURE, TOP_P)  # [K, 1]
+            next_tokens = _sample_batch_tokens(logits_K, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)  # [K, 1]
             next_flat   = next_tokens.squeeze(1)                         # [K]
             eos_hit     = next_flat.eq(eos_tensor)                       # [K] bool GPU
             n_gen_arr   = torch.tensor(
