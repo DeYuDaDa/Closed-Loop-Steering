@@ -585,12 +585,15 @@ def run_continuous_batching_generation(
         """Reset global state fields for a freshly occupied slot."""
         state.active_mask[slot_idx] = True
         state.is_converged[slot_idx] = False
+        state.margin[slot_idx] = float("inf")
         state.ema_entropy[slot_idx] = 0.0
         state.ema_trajectory[slot_idx] = []
         state.alpha_trajectory[slot_idx] = []
         state.entropy_trajectory[slot_idx] = []
         state.intervention_start_step[slot_idx] = None
         state.intervention_end_step[slot_idx] = None
+        state.step_count[slot_idx] = 0
+        state.intervention_active[slot_idx] = False
         if mode == "Continuous":
             state.alpha[slot_idx] = CONTINUOUS_ALPHA
         elif mode == "Continuous_Linear":
@@ -602,6 +605,8 @@ def run_continuous_batching_generation(
                 pid.integral[slot_idx] = 0.0
             if hasattr(pid, "prev_error"):
                 pid.prev_error[slot_idx] = 0.0
+            if hasattr(pid, "is_first_step"):
+                pid.is_first_step[slot_idx] = True
                 
         if hasattr(state, "low_entropy_count"):
             state.low_entropy_count[slot_idx] = 0

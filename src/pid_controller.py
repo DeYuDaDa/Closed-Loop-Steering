@@ -88,6 +88,7 @@ class PIDController:
         # Internal state (Batched)
         self.prev_error: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
         self.integral: torch.Tensor = torch.zeros(self.batch_size, device=self.device)
+        self.is_first_step: torch.Tensor = torch.ones(self.batch_size, dtype=torch.bool, device=self.device)
 
     def step(self, entropy: torch.Tensor, active_mask: torch.Tensor, is_converged: torch.Tensor) -> torch.Tensor:
         """
@@ -104,6 +105,19 @@ class PIDController:
         # 1. Base error: e_t = max(0, EMA_t - SetPoint)
         # Clamped at 0 to avoid negative intervention when entropy is below threshold.
         error = torch.clamp(entropy - self.setpoint, min=0.0)
+
+        # Handle first step pseudo-spike in derivative by anchoring prev_error to current error
+        self.prev_error = torch.where(
+            self.is_first_step & active_mask,
+            error,
+            self.prev_error
+        )
+        # Clear the first step flag for active sequences
+        self.is_first_step = torch.where(
+            active_mask,
+            torch.zeros_like(self.is_first_step),
+            self.is_first_step
+        )
 
         # 2. Adaptive Proportional Gain (K_p)
         if self.use_dynamic_gain and self.lambda_val > 0.0:
@@ -188,3 +202,4 @@ class PIDController:
         """Reset controller state for a new generation episode."""
         self.prev_error.zero_()
         self.integral.zero_()
+        self.is_first_step.fill_(True)
