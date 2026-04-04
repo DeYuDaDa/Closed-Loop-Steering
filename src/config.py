@@ -65,7 +65,7 @@ CONTINUOUS_ALPHA = 0.45       # Default SLERP rotation angle for Continuous mode
 # Continuous_Linear α is calibrated via Equal Orthogonal Projection from SLERP α:
 #   α_linear = sin(α_slerp * π/2) * ||h||  (applied inside the hook)
 #   α_slerp=0.30 → α_linear≈0.45 | α_slerp=0.45 → α_linear≈0.65
-CONTINUOUS_LINEAR_ALPHA = 0.45  # Calibrated linear coefficient (matches SLERP=0.30 sweet spot)
+CONTINUOUS_LINEAR_ALPHA = 0.3  # Calibrated linear coefficient (matches SLERP=0.30 sweet spot)
 CAPTURE_HIDDEN_STATES = False  # Whether to log all hidden states during hook (memory intensive)
 
 # ======================== Vector Paths ========================
@@ -73,11 +73,11 @@ VECTOR_DIR = "./vectors/qwen3-8b"
 
 # ======================== Generation ========================
 DO_SAMPLE = True
-TEMPERATURE = 0.7
+TEMPERATURE = 0.6
 TOP_P = 0.95
 TOP_K = 20                    # Hard cap on sampling pool (0 = disabled). Prevents long-tail noise tokens.
 MIN_P = 0.05                  # Dynamic floor: discard tokens with P < min_p * P_max. Adapts to model confidence.
-MAX_NEW_TOKENS = 4096
+MAX_NEW_TOKENS = 4096*8
 ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 
@@ -103,7 +103,7 @@ REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
 
 # ======================== AIME Benchmark ========================
 DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
-AIME_MAX_TOKENS = 4096        # Extended token budget for math reasoning
-BATCH_SIZE = 16                # Legacy static batch size (kept for reference)
-MAX_CONCURRENT_SEQS = 16      # Continuous batching: max slots active simultaneously
+AIME_MAX_TOKENS = 4096*8        # Extended token budget for math reasoning
+BATCH_SIZE = 4                # Legacy static batch size (kept for reference)
+MAX_CONCURRENT_SEQS = 4      # Continuous batching: max slots active simultaneously
                                # Physical GPU throughput is ~= this number of parallel seqs

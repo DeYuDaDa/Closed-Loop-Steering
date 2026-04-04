@@ -660,6 +660,7 @@ def run_continuous_batching_generation(
             dummy_ids = torch.zeros(
                 (max_concurrent_seqs, enc.input_ids.shape[1]), dtype=torch.long, device=device
             )
+            dummy_ids[slot_idx] = enc.input_ids[0]
             monitor(dummy_ids, dummy_logits)
             state.active_mask = saved_mask
 
@@ -743,9 +744,15 @@ def run_continuous_batching_generation(
 
             # Update StateMonitor once for all active slots.
             if monitor is not None:
+                max_L = max(active_list[i].input_ids.shape[1] for i in range(len(active_list)))
+                ids_buf = torch.zeros((max_concurrent_seqs, max_L), dtype=torch.long, device=device)
+                
                 for list_i, slot_i in enumerate(active_indices):
                     dummy_logits_buf[slot_i] = logits_K[list_i]
-                monitor(dummy_ids_buf, dummy_logits_buf)
+                    L = active_list[list_i].input_ids.shape[1]
+                    ids_buf[slot_i, -L:] = active_list[list_i].input_ids[0, :]
+                    
+                monitor(ids_buf, dummy_logits_buf)
 
             # GPU-side EOS / max-len detection (single CPU sync).
             next_tokens = _sample_batch_tokens(logits_K, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)  # [K, 1]

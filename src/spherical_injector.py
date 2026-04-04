@@ -285,9 +285,13 @@ def create_steering_hook(
                 physical_idx = active_idx_tensor[trigger_mask]
                 state.trigger_perturbation[physical_idx] = False
                 state.cooldown_counter[physical_idx] = PERTURBATION_COOLDOWN_STEPS
+                if hasattr(state, "low_entropy_count"):
+                    state.low_entropy_count[physical_idx] = 0
             else:
                 state.trigger_perturbation[trigger_mask] = False
                 state.cooldown_counter[trigger_mask] = PERTURBATION_COOLDOWN_STEPS
+                if hasattr(state, "low_entropy_count"):
+                    state.low_entropy_count[trigger_mask] = 0
 
         # Write back
         hidden = hidden.clone()

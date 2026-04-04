@@ -151,10 +151,15 @@ class StateMonitor(LogitsProcessor):
         
         # --- 1. Compute EMA Entropy ---
         is_first_step = (self.state.step_count == 0)
-        self.state.ema_entropy = torch.where(
+        new_ema = torch.where(
             is_first_step,
             H_t,
             self.ema_beta * H_t + (1.0 - self.ema_beta) * self.state.ema_entropy
+        )
+        self.state.ema_entropy = torch.where(
+            self.state.active_mask,
+            new_ema,
+            self.state.ema_entropy
         )
         
         # Update step_count only for active sequences
@@ -228,7 +233,11 @@ class StateMonitor(LogitsProcessor):
             suppress_mask = self.state.trigger_perturbation | in_cooldown
             alpha = torch.where(suppress_mask, torch.zeros_like(alpha), alpha)
             
-            self.state.alpha = alpha
+            self.state.alpha = torch.where(
+                self.state.active_mask,
+                alpha,
+                self.state.alpha
+            )
 
             # Track intervention window (Vectorized):
             # Start: alpha > 0 and not previously active
