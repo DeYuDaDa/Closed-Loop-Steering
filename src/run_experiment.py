@@ -411,6 +411,16 @@ def _slot_to_result(slot: _Slot, state, slot_idx: int, tokenizer) -> dict:
     Reads trajectory data from the global state at physical index slot_idx.
     """
     generated_ids = slot.input_ids[0, slot.input_len:]
+
+    # Strip everything after first EOS token (for static batching padded ends)
+    eos_id = tokenizer.eos_token_id
+    if isinstance(eos_id, list):
+        eos_id = eos_id[0]
+        
+    eos_positions = (generated_ids == eos_id).nonzero(as_tuple=True)[0]
+    if len(eos_positions) > 0:
+        generated_ids = generated_ids[:eos_positions[0] + 1]
+
     if tokenizer.pad_token_id is not None:
         mask = generated_ids != tokenizer.pad_token_id
         generated_ids = generated_ids[mask]
@@ -1019,11 +1029,11 @@ def run_full_experiment(
                 max_concurrent_seqs=max_concurrent_seqs
             )
         else:
-            print(f"  Using SEQUENTIAL INFERENCE (Absolute Isolation) for ALL modes...")
+            print(f"  Using ISOLATED BATCH INFERENCE (Static Batching, batch_size={max_concurrent_seqs}) for ALL modes...")
             pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
-            from single_inference import run_single_inference
-            gen_iterator = run_single_inference(
-                model, tokenizer, prompts, mode, control_vectors
+            from single_inference import run_isolated_batch_inference
+            gen_iterator = run_isolated_batch_inference(
+                model, tokenizer, prompts, mode, control_vectors, batch_size=max_concurrent_seqs
             )
 
         for batch_results in gen_iterator:
