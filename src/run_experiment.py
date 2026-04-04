@@ -850,6 +850,7 @@ def run_full_experiment(
     max_concurrent_seqs: int = MAX_CONCURRENT_SEQS,
     dataset_type: str = "aime",
     results_path: str = None,
+    use_batch: bool = False,
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -990,8 +991,6 @@ def run_full_experiment(
         else:
             prompts = collate_prompts_aime(dataset)
 
-        print(f"  Using CONTINUOUS BATCHING (max_concurrent_seqs={max_concurrent_seqs}) for ALL modes...")
-        
         mode_data = {
             "accuracy": 0.0,
             "correct_count": 0,
@@ -1012,14 +1011,20 @@ def run_full_experiment(
             "mode_repetitions": []
         }
 
-        # Initialize progress bar
-        pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
-
-        # Create generator — continuous batching eliminates straggler padding waste
-        gen_iterator = run_continuous_batching_generation(
-            model, tokenizer, prompts, mode, control_vectors,
-            max_concurrent_seqs=max_concurrent_seqs
-        )
+        if use_batch:
+            print(f"  Using CONTINUOUS BATCHING (max_concurrent_seqs={max_concurrent_seqs}) for ALL modes...")
+            pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
+            gen_iterator = run_continuous_batching_generation(
+                model, tokenizer, prompts, mode, control_vectors,
+                max_concurrent_seqs=max_concurrent_seqs
+            )
+        else:
+            print(f"  Using SEQUENTIAL INFERENCE (Absolute Isolation) for ALL modes...")
+            pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
+            from single_inference import run_single_inference
+            gen_iterator = run_single_inference(
+                model, tokenizer, prompts, mode, control_vectors
+            )
 
         for batch_results in gen_iterator:
             # Reconstruct the original dataset problems corresponding to these exact results.
@@ -1136,6 +1141,11 @@ def main():
         default=None,
         help="Experiment modes to run (default: all).",
     )
+    parser.add_argument(
+        "--use_batch",
+        action="store_true",
+        help="Use continuous batching for faster but potentially less isolated inference (default: False/Sequential).",
+    )
     args = parser.parse_args()
 
     # ---- Determine dataset ----
@@ -1214,6 +1224,7 @@ def main():
         max_concurrent_seqs=MAX_CONCURRENT_SEQS,
         dataset_type=dataset_type,
         results_path=results_path,
+        use_batch=args.use_batch,
     )
 
     print(f"\n📊 Final results saved to {results_path}")
