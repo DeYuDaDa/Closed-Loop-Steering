@@ -244,15 +244,20 @@ def run_isolated_batch_inference(
         
         try:
             # --- 4. Massive Mathematical Prefill (KV Cache Restoration via Replay) ---
+            # Bypass `model.forward` (which computes logits for the full massive sequence causing 7GB+ OOM)
+            # Instead directly compute backbone hidden_states and past_key_values, then manually project the final token.
             with torch.no_grad():
-                out = model(
+                out = model.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     use_cache=True,
                     return_dict=True,
                 )
-            
-            # Reprefill completed, unhook replay and attach standard live steering
+                
+            last_hidden = out.last_hidden_state[:, -1:, :] # [B, 1, hidden_dim]
+            logits_1 = model.lm_head(last_hidden).squeeze(1) # [B, vocab_size]
+            logits_1 = run_experiment._safe_score_range_clean(logits_1, eos_id)
+            past_key_values = out.past_key_values
             if replay_hook_handle is not None:
                 replay_hook_handle.remove()
                 replay_hook_handle = None
@@ -267,9 +272,6 @@ def run_isolated_batch_inference(
                     capture_hidden_states=False,
                 )
                 hook_handle = layer.register_forward_hook(hook_fn)
-                
-            logits_1 = run_experiment._safe_score_range_clean(out.logits[:, -1, :], eos_id)
-            past_key_values = out.past_key_values
             
             if monitor is not None:
                 monitor(input_ids, logits_1)
