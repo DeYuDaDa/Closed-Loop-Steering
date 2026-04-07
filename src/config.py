@@ -37,7 +37,7 @@ N_GRAM_K = 3                          # Sequence match length for repetition det
 PID_KP = 2.0                  # Proportional gain 0.6
 PID_KI = 0                  # Integral gain
 PID_KD = 0.5                 # Derivative gain
-ALPHA_MAX = 0.45              # Maximum rotation angle (radians), ~17 degrees
+ALPHA_MAX = 0.6              # Maximum rotation angle (radians), ~17 degrees
 
 # ======================== EAST: Entropy-Scaled Steering (方案一) ========================
 # Reference: Entropic Activation Steering (arXiv:2406.00244)
@@ -46,7 +46,7 @@ ALPHA_MAX = 0.45              # Maximum rotation angle (radians), ~17 degrees
 # When EMA_t < θ_high (model on track), α'_t ≈ α_t (full steering power).
 EAST_ENABLED = True           # Master switch for entropy-scaled steering
 EAST_LAMBDA_SCALE = 10.0      # Sigmoid steepness around θ_high (higher = sharper cutoff)
-EAST_HIGH_ENTROPY_THETA = 0.45  # Entropy threshold above which steering decays (mid-high confusion zone)
+EAST_HIGH_ENTROPY_THETA = 0.6  # Entropy threshold above which steering decays (mid-high confusion zone)
 EAST_H_MIN = 0.0              # Min entropy for normalization (typically 0)
 EAST_H_MAX = 1.0              # Max entropy for normalization (log-normalized to 0-1 range)
 

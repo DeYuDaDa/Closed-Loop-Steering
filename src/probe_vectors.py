@@ -36,10 +36,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # ── local imports (no modification of existing modules) ────────────────────────
 from config import MODEL_PATH, LAYER_ID, VECTOR_DIR
+LAYER_ID = 16
 from spherical_injector import spherical_rotate
-
 # ── constants ──────────────────────────────────────────────────────────────────
-TARGET_NORM  = 100.0           # Realistic hidden-state norm at layer 24
+TARGET_NORM  = 100           # Realistic hidden-state norm at layer 24
 TOP_K        = 20              # Number of tokens to report
 OUT_DIR      = "./probe_results"
 
@@ -129,8 +129,8 @@ def main():
     print("=" * 70)
 
     # ── 1. Load vectors ────────────────────────────────────────────────────────
-    raw_path      = os.path.join(VECTOR_DIR, "critic_raw.pt")
-    purified_path = os.path.join(VECTOR_DIR, "critic.pt")
+    raw_path      = os.path.join(VECTOR_DIR, "math_grounding_raw.pt")
+    purified_path = os.path.join(VECTOR_DIR, "math_grounding.pt")
 
     print(f"\n[Step 1] Loading vectors from {VECTOR_DIR}")
     v_raw      = load_vector(raw_path)       # shape [d], arbitrary norm

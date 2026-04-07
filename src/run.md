@@ -224,9 +224,9 @@ python extract_grounding_vector.py \
 
 
 python extract_grounding_vector.py \
-    --data_dir f:\academic\Closed-Loop-Steering-System\src\dataset\train_opus\distilled_corpus_400k_with_cot-filtered.jsonl \
+    --data_dir /root/Closed-Loop-Steering-System/src/dataset/train_opus/distilled_corpus_400k_with_cot-filtered.jsonl \
     --target_layer 24 \
     --learning_rate 0.01 \
     --l2_penalty 0.1 \
-    --max_epochs 2 \
+    --max_epochs 1 \
     --norm_ceiling 30.0
