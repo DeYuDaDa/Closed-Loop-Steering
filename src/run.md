@@ -221,3 +221,12 @@ python extract_grounding_vector.py \
     --l2_penalty 0.01 \
     --contrastive_weight 1.0 \
     --max_epochs 80
+
+
+python extract_grounding_vector.py \
+    --data_dir f:\academic\Closed-Loop-Steering-System\src\dataset\train_opus\distilled_corpus_400k_with_cot-filtered.jsonl \
+    --target_layer 24 \
+    --learning_rate 0.01 \
+    --l2_penalty 0.1 \
+    --max_epochs 2 \
+    --norm_ceiling 30.0
