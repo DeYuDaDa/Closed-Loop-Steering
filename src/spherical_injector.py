@@ -57,20 +57,25 @@ def spherical_rotate(
     h_norm = torch.norm(h, dim=-1, keepdim=True).clamp_min(eps)
     h_hat = h / h_norm
 
-    # 2. Compute current angle (theta) between h_hat and v
-    cos_theta = torch.sum(h_hat * v, dim=-1, keepdim=True).clamp(-1.0 + eps, 1.0 - eps)
-    theta = torch.acos(cos_theta)
-
-    # 3. Handle alpha broadcasting and clamping [0, 1]
+    # 3. Handle alpha broadcasting and sign extraction
     if isinstance(alpha, torch.Tensor):
         alpha_b = alpha.float()
         while alpha_b.dim() < h.dim():
             alpha_b = alpha_b.unsqueeze(-1)
     else:
         alpha_b = torch.tensor(alpha, dtype=torch.float32, device=h.device)
+        
+    # 支持负 alpha：当 alpha < 0 时，视为向着 -v 旋转
+    direction_sign = torch.sign(alpha_b)
+    direction_sign = torch.where(direction_sign == 0, torch.tensor(1.0, device=h.device), direction_sign)
+    v_eff = v * direction_sign
     
-    # 物理意义修正：alpha 现在是 0~1 的插值比例
-    t = torch.clamp(alpha_b, 0.0, 1.0)
+    # 2. Compute current angle (theta) between h_hat and v_eff
+    cos_theta = torch.sum(h_hat * v_eff, dim=-1, keepdim=True).clamp(-1.0 + eps, 1.0 - eps)
+    theta = torch.acos(cos_theta)
+    
+    # 物理意义修正：t 现在是 0~1 的插值比例, 通过 abs 支撑反向
+    t = torch.clamp(torch.abs(alpha_b), 0.0, 1.0)
 
     # 4. Compute new angle (shrink the gap by proportion t)
     # If t=0.3, theta_new is 70% of original theta (moved 30% closer)
@@ -84,11 +89,11 @@ def spherical_rotate(
     u = torch.where(
         is_collinear.expand_as(h_hat), 
         torch.zeros_like(h_hat), 
-        (h_hat - cos_theta * v) / sin_theta
+        (h_hat - cos_theta * v_eff) / sin_theta
     )
 
-    # 6. Construct new vector using target v and orthogonal u
-    h_hat_rotated = torch.cos(theta_new) * v + torch.sin(theta_new) * u
+    # 6. Construct new vector using target v_eff and orthogonal u
+    h_hat_rotated = torch.cos(theta_new) * v_eff + torch.sin(theta_new) * u
 
     # 7. Restore original norm
     h_new = h_norm * h_hat_rotated
@@ -221,10 +226,10 @@ def create_steering_hook(
             has_perturb = isinstance(trigger_mask, torch.Tensor) and trigger_mask.any().item()
 
         # For scalar alpha (Continuous / Continuous_Linear mode)
-        if isinstance(alpha, (float, int)) and alpha <= 0 and not has_perturb:
+        if isinstance(alpha, (float, int)) and alpha == 0 and not has_perturb:
             return output
         # For tensor alpha (Dynamic_Spherical mode)
-        elif isinstance(alpha, torch.Tensor) and (alpha <= 0).all() and not has_perturb:
+        elif isinstance(alpha, torch.Tensor) and (alpha == 0).all() and not has_perturb:
             return output
 
         # Align control vector to device/dtype of hidden state
