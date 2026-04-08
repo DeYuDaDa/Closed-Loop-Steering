@@ -52,7 +52,7 @@ from spherical_injector import create_steering_hook
 # 配置项
 # ═══════════════════════════════════════════════
 TOP_K_LOG = 5          # 日志中记录的 top-k 个数
-MAX_NEW_TOKENS = 4096   # 单次回复最大 token 数 (超过自动截断)
+MAX_NEW_TOKENS = 4096*8   # 单次回复最大 token 数 (超过自动截断)
 LOG_PATH = "interactive_vector_log.txt"  # 日志路径
 
 # ════════════════════════════════════════════════════════
