@@ -1,0 +1,61 @@
+复现对比激活叠加（Contrastive Activation Addition, CAA）算法是一个非常好的工程实践。为了让你的 Coding Agent 能够高效、准确地完成代码编写，我们需要将论文中的理论转化为明确的系统架构和接口约束。
+
+以下是一份专门为 Coding Agent 编写的架构规范和开发指南（Coding Guide），你可以直接将此内容作为 System Prompt 或开发文档输入给你的 Agent。
+
+---
+
+# CAA (Contrastive Activation Addition) Implementation Guide for Coding Agents
+
+## 1. Project Overview
+[cite_start]**Objective:** Implement the Contrastive Activation Addition (CAA) algorithm [cite: 12] [cite_start]to steer the behavior of Llama 2 models (7B/13B Chat) during inference by modifying their intermediate residual stream activations[cite: 103, 104].
+[cite_start]**Reference Implementation:** The official paper implementation is located at `https://github.com/nrimsky/CAA`[cite: 470]. Use this as a functional benchmark if needed.
+[cite_start]**Tech Stack:** Python 3.10+, PyTorch (`torch`), Huggingface Transformers (`transformers`)[cite: 105, 106].
+
+## 2. Core Architecture & Module Breakdown
+The project should be divided into four distinct modules:
+
+### Module 1: Dataset & Prompt Formatter (`data_utils.py`)
+[cite_start]**Goal:** Parse multiple-choice datasets and format them into contrastive positive/negative prompt pairs[cite: 89, 91].
+* [cite_start]**Prompt Structure:** The prompts must exactly match the Llama 2 Chat instruction format[cite: 117].
+* [cite_start]**Contrast Pair Construction:** Each data point consists of a question and two answer choices (A and B)[cite: 91].
+    * [cite_start]*Positive Prompt ($p, c_p$):* Elicits the target behavior[cite: 93]. [cite_start]Example string: `[INST] <Question Text> \n\nChoices: (A) <Behavior> (B) <Opposite> [/INST] (A`[cite: 32].
+    * [cite_start]*Negative Prompt ($p, c_n$):* Elicits the opposite behavior[cite: 93]. [cite_start]Example string: `[INST] <Question Text> \n\nChoices: (A) <Behavior> (B) <Opposite> [/INST] (B`[cite: 34].
+* **Output:** A list of tuple pairs `(positive_prompt_str, negative_prompt_str)`.
+
+### Module 2: Activation Extraction (`hook_utils.py`)
+[cite_start]**Goal:** Run forward passes to extract the residual stream activations at a specific layer for the contrastive dataset[cite: 48].
+* **Target Location:** The residual stream (usually the output of the transformer block, before or after the attention/MLP layers depending on the exact architecture, but typically the final output of `model.model.layers[n]`).
+* [cite_start]**Token Position:** Activations MUST be extracted **only at the token position of the answer letter** (the final token of the formatted prompt, e.g., the token for "A" or "B")[cite: 94, 102].
+* **Mechanism:** Implement a PyTorch forward hook (`register_forward_hook`) to capture and save the tensor.
+
+### Module 3: Steering Vector Generation (`vector_generator.py`)
+[cite_start]**Goal:** Compute the Mean Difference (MD) steering vector $v_{MD}$[cite: 95].
+* **Algorithm:**
+    1. [cite_start]Iterate through the dataset $D$ of size $N$[cite: 97].
+    2. [cite_start]For each pair, extract the activation for the positive prompt $a_L(p, c_p)$ and the negative prompt $a_L(p, c_n)$ at target layer $L$[cite: 101].
+    3. [cite_start]Compute the mean difference[cite: 98, 99, 100]:
+    $$v_{MD} = \frac{1}{|D|} \sum_{(p, c_p, c_n) \in D} [a_L(p, c_p) - a_L(p, c_n)]$$
+* **Output:** Save the resulting tensor $v_{MD}$ (shape should match the model's hidden dimension) to disk (e.g., as a `.pt` file).
+
+### Module 4: Inference Intervention (`steering_inference.py`)
+[cite_start]**Goal:** Apply the generated steering vector during auto-regressive generation[cite: 14].
+* **Mechanism:** Implement a PyTorch forward pre-hook or forward hook on layer $L$.
+* **Intervention Rule:** Let $x$ be the residual stream tensor. Modify it as:
+    $$x_{new} = x + (c \times v_{MD})$$
+    [cite_start]*Where $c$ is the `multiplier` (e.g., +2.0 or -2.0)[cite: 29].*
+* [cite_start]**Token Position Constraint (CRITICAL):** The steering vector must ONLY be added to token positions **after the user's initial prompt**[cite: 14, 124, 366].
+    * *Implementation Tip:* During `model.generate()`, keep track of the sequence length of the original prompt. Apply the vector only to indices `>= prompt_length`.
+
+## 3. Recommended Hyperparameters (Based on Paper)
+Instruct the agent to set these as default arguments in an `argparse` configuration:
+* [cite_start]**Target Model:** `meta-llama/Llama-2-7b-chat-hf` or `meta-llama/Llama-2-13b-chat-hf`[cite: 103].
+* **Optimal Layers ($L$):**
+    * [cite_start]For Llama 2 7B Chat: Layer **13**[cite: 155].
+    * [cite_start]For Llama 2 13B Chat: Layer **14** or **15**[cite: 156].
+* [cite_start]**Multiplier ($c$):** Test ranges between **-1.5 to +1.5** [cite: 173] [cite_start]or **-2.0 to +2.0**[cite: 29]. [cite_start]Note that extreme multipliers degrade text quality[cite: 218].
+
+## 4. Coding Agent Instructions (Prompt Constraints)
+1.  **Memory Management:** Huggingface models are large. Ensure the code supports `device_map="auto"` or `torch.bfloat16` precision to prevent CUDA OOM errors.
+2.  **Hook Cleanup:** The agent MUST ensure that all hooks are properly removed (`hook.remove()`) after extraction or generation to prevent memory leaks and state contamination.
+3.  **Extensibility:** Write the hook injection logic dynamically so it can target any layer `n` via a configuration parameter (e.g., `model.model.layers[n]`).
+4.  **Batching:** For vector generation (Module 3), support batched forward passes to speed up extraction, but be careful with padding tokens affecting the index of the "last token" (the answer letter). Provide logic to correctly index the unpadded answer token.

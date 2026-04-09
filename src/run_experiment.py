@@ -1199,6 +1199,7 @@ def main():
         MODEL_PATH,
         torch_dtype=model_dtype,
         device_map=DEVICE_MAP,
+        attn_implementation="flash_attention_2",
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 

@@ -1,0 +1,1 @@
+Let $P$ be a point on the circumcircle of square $ABCD$ such that $PA \cdot PC = 56$ and $PB \cdot PD = 90.$ What is the area of square $ABCD?$

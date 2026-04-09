@@ -1,0 +1,1 @@
+Rhombus $ABCD$ has $\angle BAD<90^{\circ}$. There is a point $P$ on the incircle of the rhombus such that the distances from $P$ to lines $DA$, $AB$, and $BC$ are $9$, $5$, and $16$, respectively. Find the perimeter of $ABCD$.

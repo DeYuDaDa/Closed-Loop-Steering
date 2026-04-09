@@ -1,0 +1,74 @@
+<think>
+Okay, I need to find the perimeter of rhombus $ABCD$. 
+Let's carefully note down the given conditions:
+1. $ABCD$ is a rhombus with $\angle BAD < 90^\circ$.
+2. $P$ lies on the incircle of the rhombus.
+3. The distances from $P$ to lines $DA$, $AB$, and $BC$ are $d_1 = 9$, $d_2 = 5$, and $d_3 = 16$.
+
+First, let's recognize a key property of the incircle in a rhombus. The distance between opposite parallel sides is constant and equal to the height of the rhombus, $h$. 
+Since the incircle is tangent to all four sides, its diameter equals this height $h$, so its radius is $r = h/2$.
+Notice that $P$ lies between the parallel lines $DA$ and $BC$. Therefore, the sum of the distances from $P$ to $DA$ and to $BC$ must exactly equal the distance between these parallel lines.
+So, $h = d(P, DA) + d(P, BC) = 9 + 16 = 25$.
+This immediately gives the radius of the incircle: $r = 25 / 2 = 12.5$.
+
+To use the remaining distance $d(P, AB) = 5$, I should establish a coordinate system. This ensures rigorous tracking of all distances.
+Let the center of the rhombus (and the incircle) be at the origin $(0,0)$. 
+The incircle is $x^2 + y^2 = r^2 = 12.5^2$.
+Let the diagonals of the rhombus lie on the x and y axes. 
+By symmetry, the four lines representing the sides can be given by:
+$L_1: x\cos\alpha - y\sin\alpha = r$  (Line $DA$)
+$L_2: x\cos\alpha + y\sin\alpha = r$  (Line $AB$)
+$L_3: -x\cos\alpha + y\sin\alpha = r$ (Line $BC$)
+$L_4: -x\cos\alpha - y\sin\alpha = r$ (Line $CD$)
+Let's check if the angle $\angle BAD < 90^\circ$ imposes a condition on $\alpha$. The vertex $A$ is the intersection of $DA$ and $AB$.
+$x\cos\alpha = r \implies x = r/\cos\alpha, y=0$. So $A = (r/\cos\alpha, 0)$.
+The angle at $A$ is split by the x-axis. In the right triangle at the origin, the angle $\angle OAB$ has $\tan(\angle OAB) = \cot\alpha$. So $\angle OAB = 90^\circ - \alpha$.
+Since $\angle BAD = 2(90^\circ - \alpha) = 180^\circ - 2\alpha < 90^\circ$, we must have $2\alpha > 90^\circ \implies \alpha > 45^\circ$.
+This means $\sin\alpha > \cos\alpha$.
+
+Let $P = (x_0, y_0)$ be on the incircle, so $x_0^2 + y_0^2 = r^2$.
+The distances from $P$ to the lines are given. Since $P$ is inside the rhombus, the origin and $P$ are on the same side of each line.
+$d_1 = r - (x_0\cos\alpha - y_0\sin\alpha) = 9$
+$d_2 = r - (x_0\cos\alpha + y_0\sin\alpha) = 5$
+$d_3 = r - (-x_0\cos\alpha + y_0\sin\alpha) = 16$
+
+Let's double check $d_1 + d_3$: $(r - x_0\cos\alpha + y_0\sin\alpha) + (r + x_0\cos\alpha - y_0\sin\alpha) = 2r = 25$. This perfectly matches $9+16=25$.
+Now, let's solve for $x_0\cos\alpha$ and $y_0\sin\alpha$ using $d_1$ and $d_2$:
+$r - x_0\cos\alpha + y_0\sin\alpha = 9$
+$r - x_0\cos\alpha - y_0\sin\alpha = 5$
+Adding the two equations: $2r - 2x_0\cos\alpha = 14 \implies 25 - 2x_0\cos\alpha = 14 \implies 2x_0\cos\alpha = 11 \implies x_0\cos\alpha = 5.5$.
+Subtracting the two equations: $2y_0\sin\alpha = 4 \implies y_0\sin\alpha = 2$.
+So $x_0 = 5.5 / \cos\alpha$ and $y_0 = 2 / \sin\alpha$.
+
+Substitute these into the incircle equation $x_0^2 + y_0^2 = r^2 = 12.5^2 = 156.25$:
+$(5.5 / \cos\alpha)^2 + (2 / \sin\alpha)^2 = 156.25$.
+Let $u = \cos^2\alpha$. Then $\sin^2\alpha = 1 - u$.
+$\frac{30.25}{u} + \frac{4}{1 - u} = 156.25$.
+Multiply by $u(1-u)$ to clear denominators:
+$30.25(1 - u) + 4u = 156.25u(1 - u)$.
+$30.25 - 26.25u = 156.25u - 156.25u^2$.
+$156.25u^2 - 182.5u + 30.25 = 0$.
+Multiply by 4 to deal with integers:
+$625u^2 - 730u + 121 = 0$.
+Apply the quadratic formula:
+$u = \frac{730 \pm \sqrt{730^2 - 4(625)(121)}}{2(625)}$.
+Discriminant: $730^2 - 2500 \times 121 = 532900 - 302500 = 230400$.
+$\sqrt{230400} = 480$.
+$u = \frac{730 \pm 480}{1250}$.
+$u_1 = \frac{1210}{1250} = \frac{121}{125}$.
+$u_2 = \frac{250}{1250} = \frac{1}{5}$.
+Recall our condition $\alpha > 45^\circ \implies u = \cos^2\alpha < 0.5$.
+Since $121/125$ is almost 1, we must reject it. Thus, $u = \cos^2\alpha = 1/5$.
+This implies $\sin^2\alpha = 4/5$.
+
+Now, I need the perimeter of the rhombus, which is $4 \times s$, where $s$ is the side length.
+The side length $s$ is the distance from $A(r/\cos\alpha, 0)$ to $B(0, r/\sin\alpha)$.
+$s = \sqrt{(r/\cos\alpha)^2 + (r/\sin\alpha)^2} = \sqrt{\frac{r^2}{\cos^2\alpha} + \frac{r^2}{\sin^2\alpha}} = \sqrt{\frac{r^2(\sin^2\alpha+\cos^2\alpha)}{\sin^2\alpha\cos^2\alpha}} = \frac{r}{\sin\alpha\cos\alpha}$.
+We have $r = 12.5$.
+$\sin\alpha\cos\alpha = \sqrt{(1/5)(4/5)} = \sqrt{4/25} = 2/5$.
+So $s = \frac{12.5}{2/5} = 12.5 \times 2.5 = 31.25$.
+The perimeter is $4s = 4 \times 31.25 = 125$.
+Let me review: sum of distances logic is sound, coordinate assignment matches conditions, quadratic derivation is flawless, geometric bounds applied correctly.
+</think>
+
+The perimeter of $ABCD$ is \boxed{125}.

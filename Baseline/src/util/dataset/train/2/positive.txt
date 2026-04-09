@@ -1,0 +1,71 @@
+<think>
+Okay, let's break this problem down carefully. I need to find the expected number of correct guesses Alice makes when playing optimally with a deck of 3 red and 3 black cards.
+Let's review the rules: 
+- Total cards: 3 Red, 3 Black.
+- Revealed one by one.
+- Alice guesses the color before it's revealed.
+- "Optimal play" means at any point, Alice should guess the color that is most likely to appear next. If the remaining colors are equal, she can guess either with equal expected value.
+
+Let's define a state $(r, b)$ where $r$ is the number of remaining red cards and $b$ is the number of remaining black cards.
+Let $E(r, b)$ be the expected number of correct guesses starting from state $(r, b)$.
+Since Alice plays optimally:
+- If $r > b$, she guesses red. She is correct with probability $\frac{r}{r+b}$ (moving to state $r-1, b$) and incorrect with probability $\frac{b}{r+b}$ (moving to state $r, b-1$).
+So, for $r > b$: $E(r, b) = \frac{r}{r+b}(1 + E(r-1, b)) + \frac{b}{r+b}(0 + E(r, b-1))$.
+- By symmetry, if $b > r$, $E(r, b) = E(b, r)$.
+- If $r = b$, she guesses either (say red). She is correct with probability $\frac{r}{2r} = \frac{1}{2}$ and incorrect with probability $\frac{1}{2}$.
+So, for $r = b$: $E(r, r) = \frac{1}{2}(1 + E(r-1, r)) + \frac{1}{2}(0 + E(r, r-1))$.
+Notice that by symmetry $E(r-1, r) = E(r, r-1)$. Thus, this simplifies to:
+$E(r, r) = \frac{1}{2} + E(r, r-1)$.
+
+Let's compute these expected values systematically, starting from the base cases where one suit is exhausted.
+Base cases: If $b=0$, all remaining cards are red. Alice guesses red every time and is always correct.
+So $E(r, 0) = r$ for all $r$.
+Symmetrically, $E(0, b) = b$.
+
+Let's compute for $r+b = 2$:
+$E(1, 1) = \frac{1}{2} + E(1, 0) = \frac{1}{2} + 1 = \frac{3}{2}$.
+
+Next, for $r+b = 3$:
+$E(2, 1)$: $r > b$, so she guesses red.
+$E(2, 1) = \frac{2}{3}(1 + E(1, 1)) + \frac{1}{3}(0 + E(2, 0))$.
+Substitute known values: $E(1, 1) = 3/2$ and $E(2, 0) = 2$.
+$E(2, 1) = \frac{2}{3}(1 + \frac{3}{2}) + \frac{1}{3}(2) = \frac{2}{3}(\frac{5}{2}) + \frac{2}{3} = \frac{5}{3} + \frac{2}{3} = \frac{7}{3}$.
+By symmetry, $E(1, 2) = \frac{7}{3}$.
+
+Next, for $r+b = 4$:
+$E(2, 2) = \frac{1}{2} + E(2, 1) = \frac{1}{2} + \frac{7}{3} = \frac{3}{6} + \frac{14}{6} = \frac{17}{6}$.
+$E(3, 1) = \frac{3}{4}(1 + E(2, 1)) + \frac{1}{4}(0 + E(3, 0))$.
+Substitute $E(2, 1) = 7/3$ and $E(3, 0) = 3$.
+$E(3, 1) = \frac{3}{4}(1 + \frac{7}{3}) + \frac{1}{4}(3) = \frac{3}{4}(\frac{10}{3}) + \frac{3}{4} = \frac{10}{4} + \frac{3}{4} = \frac{13}{4}$.
+
+Next, for $r+b = 5$:
+$E(3, 2)$: $r > b$, guess red.
+$E(3, 2) = \frac{3}{5}(1 + E(2, 2)) + \frac{2}{5}(0 + E(3, 1))$.
+Substitute $E(2, 2) = 17/6$ and $E(3, 1) = 13/4$.
+$E(3, 2) = \frac{3}{5}(1 + \frac{17}{6}) + \frac{2}{5}(\frac{13}{4}) = \frac{3}{5}(\frac{23}{6}) + \frac{13}{10} = \frac{23}{10} + \frac{13}{10} = \frac{36}{10} = \frac{18}{5}$.
+By symmetry, $E(2, 3) = \frac{18}{5}$.
+
+Finally, for $r+b = 6$:
+$E(3, 3) = \frac{1}{2} + E(3, 2)$.
+Substitute $E(3, 2) = 18/5$.
+$E(3, 3) = \frac{1}{2} + \frac{18}{5} = \frac{5}{10} + \frac{36}{10} = \frac{41}{10}$.
+
+Wait, let me review the calculations to make sure there are no arithmetic errors.
+E(1,1) = 1.5. Correct.
+E(2,1) = 2/3 * 2.5 + 1/3 * 2 = 5/3 + 2/3 = 7/3. Correct.
+E(2,2) = 0.5 + 7/3 = 17/6. Correct.
+E(3,1) = 3/4 * (1+7/3) + 1/4 * 3 = 3/4 * 10/3 + 3/4 = 10/4 + 3/4 = 13/4. Correct.
+E(3,2) = 3/5 * (1+17/6) + 2/5 * (13/4) = 3/5 * 23/6 + 2/5 * 13/4 = 23/10 + 13/10 = 36/10 = 18/5. Correct.
+E(3,3) = 0.5 + 18/5 = 5/10 + 36/10 = 41/10. Correct.
+
+The problem states the expected number is $\frac{m}{n}$ where $m$ and $n$ are relatively prime.
+Here, $m = 41$ and $n = 10$. They share no common factors (10 has prime factors 2 and 5, 41 is prime).
+The question asks for $m + n$.
+$m + n = 41 + 10 = 51$.
+The logic holds up perfectly.
+</think>
+
+The expected number of cards Alice will guess correctly is $\frac{41}{10}$. Thus, $m=41$ and $n=10$, which are relatively prime.
+The value of $m+n$ is $41 + 10 = 51$.
+
+\boxed{51}

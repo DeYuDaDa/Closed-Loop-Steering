@@ -368,6 +368,10 @@ def run_isolated_batch_inference(
             yield chunk_results
             
         # Absolute destruction
+        try:
+            del out, last_hidden, logits_1, next_tok
+        except NameError:
+            pass
         del state, pid, monitor, batched_input_ids, batched_attention_mask, input_ids, attention_mask, past_key_values, chunk_results, batch_tasks
         torch.cuda.empty_cache()
         gc.collect()
