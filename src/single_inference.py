@@ -116,7 +116,8 @@ def run_isolated_batch_inference(
                 p, tokenize=False, add_generation_prompt=True,
             )
             
-        enc = tokenizer(text, return_tensors="pt").to(device)
+        # Keep on CPU — only pull to GPU when actively batched
+        enc = tokenizer(text, return_tensors="pt")
         input_len = enc.input_ids.shape[1]
         
         task = SuspendedTask(
@@ -163,7 +164,7 @@ def run_isolated_batch_inference(
         active_queue = active_queue[bs:]
         actual_bs = len(batch_tasks)
         
-        # Compute padding for the batch
+        # Compute padding for the batch — move to GPU NOW for computation
         max_batch_seq_len = max(t.input_ids.shape[1] for t in batch_tasks)
         
         batched_input_ids = []
@@ -171,17 +172,18 @@ def run_isolated_batch_inference(
         
         for t in batch_tasks:
             seq_len = t.input_ids.shape[1]
+            t_ids = t.input_ids.to(device)  # Pull from CPU → GPU here
             pad_len = max_batch_seq_len - seq_len
             
             if pad_len > 0:
                 pad_tensor = torch.full((1, pad_len), tokenizer.pad_token_id, dtype=torch.long, device=device)
-                b_id = torch.cat([pad_tensor, t.input_ids], dim=1)
+                b_id = torch.cat([pad_tensor, t_ids], dim=1)
                 
                 mask_pad = torch.zeros((1, pad_len), dtype=torch.long, device=device)
                 mask_data = torch.ones((1, seq_len), dtype=torch.long, device=device)
                 b_mask = torch.cat([mask_pad, mask_data], dim=1)
             else:
-                b_id = t.input_ids
+                b_id = t_ids
                 b_mask = torch.ones((1, seq_len), dtype=torch.long, device=device)
                 
             batched_input_ids.append(b_id)
@@ -361,7 +363,7 @@ def run_isolated_batch_inference(
                     if hasattr(pid, "prev_error"):
                         ts["prev_error"] = pid.prev_error[i]
                 
-                t.input_ids = pure_input_ids
+                t.input_ids = pure_input_ids.cpu()  # Park back to CPU until next chunk
                 active_queue.append(t)
                 
         if len(chunk_results) > 0:
