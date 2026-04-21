@@ -21,13 +21,24 @@ Outputs (saved to VECTOR_DIR):
 
 import os
 import json
+import random
 import torch
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from config import MODEL_PATH, LAYER_ID, VECTOR_DIR, PCA_N_COMPONENTS
+from config import MODEL_PATH, LAYER_ID, VECTOR_DIR, PCA_N_COMPONENTS, GLOBAL_SEED
 from manifold_utils import ManifoldProjector
+
+
+def set_seed(seed: int):
+    """Fix all relevant RNG sources for reproducible extraction."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    print(f"🔒 Global seed fixed to {seed}")
 
 
 # ------------------------------------------------------------------ #
@@ -142,6 +153,8 @@ def extract_caa_vector(
 # ------------------------------------------------------------------ #
 
 def main():
+    set_seed(GLOBAL_SEED)
+
     # ---- Load data ----
     data_path = os.path.join(os.path.dirname(__file__), "critic_data.json")
     print(f"Loading critic data from {data_path}...")

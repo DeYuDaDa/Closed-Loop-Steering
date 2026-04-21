@@ -93,6 +93,7 @@ SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 #   "True_TAE"       — open-loop H_t * k → linear inject with raw vector
 #   "TAE_Spherical"  — open-loop H_t * k → SLERP with PCA vector (control variable)
 EXPERIMENT_MODES = ["Continuous_Linear", "Dynamic_Spherical"]
+GLOBAL_SEED = 42
 
 RESULTS_DIR = "./results"
 RESULTS_TIMESTAMP_FMT = "%Y%m%d_%H%M%S"

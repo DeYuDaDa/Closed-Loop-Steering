@@ -85,6 +85,7 @@ from config import (
     RESULTS_TIMESTAMP_FMT,
     JSON_INDENT,
     ENABLE_THINKING,
+    GLOBAL_SEED,
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
@@ -117,6 +118,19 @@ from loaders.zebra_logic_loader import (
     extract_answer_zebra,
     check_answer_zebra,
 )
+
+
+# ======================== Reproducibility ========================
+
+def set_seed(seed: int):
+    """Fix all relevant RNG sources for reproducible experiments."""
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    print(f"🔒 Global seed fixed to {seed}")
 
 
 def _normalize_vector(v: torch.Tensor) -> torch.Tensor:
@@ -861,6 +875,7 @@ def run_full_experiment(
     dataset_type: str = "aime",
     results_path: str = None,
     use_batch: bool = False,
+    use_sequential: bool = False,
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -1028,6 +1043,13 @@ def run_full_experiment(
                 model, tokenizer, prompts, mode, control_vectors,
                 max_concurrent_seqs=max_concurrent_seqs
             )
+        elif use_sequential:
+            print(f"  Using SEQUENTIAL INFERENCE (batch_size=1) for ALL modes...")
+            pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
+            from single_inference import run_single_inference
+            gen_iterator = run_single_inference(
+                model, tokenizer, prompts, mode, control_vectors
+            )
         else:
             print(f"  Using ISOLATED BATCH INFERENCE (Static Batching, batch_size={max_concurrent_seqs}) for ALL modes...")
             pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
@@ -1135,6 +1157,8 @@ def run_full_experiment(
 
 def main():
     """Main entry point for the AIME benchmark experiment."""
+    set_seed(GLOBAL_SEED)
+
     parser = argparse.ArgumentParser(
         description="Closed-Loop Steering System — AIME Benchmark Evaluation"
     )
@@ -1154,7 +1178,12 @@ def main():
     parser.add_argument(
         "--use_batch",
         action="store_true",
-        help="Use continuous batching for faster but potentially less isolated inference (default: False/Sequential).",
+        help="Use continuous batching for faster but potentially less isolated inference.",
+    )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Use strictly sequential inference (batch_size=1). Overrides other batching methods.",
     )
     args = parser.parse_args()
 
@@ -1236,6 +1265,7 @@ def main():
         dataset_type=dataset_type,
         results_path=results_path,
         use_batch=args.use_batch,
+        use_sequential=args.sequential,
     )
 
     print(f"\n📊 Final results saved to {results_path}")
