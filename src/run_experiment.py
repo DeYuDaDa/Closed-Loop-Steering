@@ -876,6 +876,7 @@ def run_full_experiment(
     results_path: str = None,
     use_batch: bool = False,
     use_sequential: bool = False,
+    resume_path: str = None,
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -1036,32 +1037,60 @@ def run_full_experiment(
             "mode_repetitions": []
         }
 
+        # ---- Resume logic: skip already-completed problems ----
+        completed_ids = set()
+        if resume_path and os.path.isfile(resume_path):
+            try:
+                with open(resume_path, "r", encoding="utf-8") as rf:
+                    existing = json.load(rf)
+                existing_mode = existing.get(mode, {})
+                existing_per_problem = existing_mode.get("per_problem", [])
+                if existing_per_problem:
+                    # Pre-populate mode_data and mode_stats with completed results
+                    mode_data["per_problem"] = existing_per_problem
+                    for d in existing_per_problem:
+                        completed_ids.add(str(d["id"]))
+                        if d.get("correct", False):
+                            mode_stats["mode_correct"] += 1
+                        mode_stats["mode_tokens_total"] += d.get("num_tokens", 0)
+                        mode_stats["mode_repetitions"].append(d.get("repetition", 0.0))
+                    print(f"  ↩️  [{mode}] Resuming: {len(completed_ids)} problems already done, "
+                          f"{len(dataset) - len(completed_ids)} remaining.")
+            except Exception as e:
+                print(f"  ⚠️  Could not load resume file: {e}. Starting fresh.")
+
+        # Filter dataset and prompts to only unfinished problems
+        if completed_ids:
+            filtered = [(i, p, d) for i, (p, d) in enumerate(zip(prompts, dataset))
+                        if str(d.get("id", i)) not in completed_ids]
+            prompts   = [x[1] for x in filtered]
+            active_dataset = [x[2] for x in filtered]
+        else:
+            active_dataset = dataset
+
+        pbar = tqdm(total=len(active_dataset), desc=f"Evaluating {mode}", unit="sample")
         if use_batch:
             print(f"  Using CONTINUOUS BATCHING (max_concurrent_seqs={max_concurrent_seqs}) for ALL modes...")
-            pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
             gen_iterator = run_continuous_batching_generation(
                 model, tokenizer, prompts, mode, control_vectors,
                 max_concurrent_seqs=max_concurrent_seqs
             )
         elif use_sequential:
             print(f"  Using SEQUENTIAL INFERENCE (batch_size=1) for ALL modes...")
-            pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
             from single_inference import run_single_inference
             gen_iterator = run_single_inference(
                 model, tokenizer, prompts, mode, control_vectors
             )
         else:
             print(f"  Using ISOLATED BATCH INFERENCE (Static Batching, batch_size={max_concurrent_seqs}) for ALL modes...")
-            pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
             from single_inference import run_isolated_batch_inference
             gen_iterator = run_isolated_batch_inference(
                 model, tokenizer, prompts, mode, control_vectors, batch_size=max_concurrent_seqs
             )
 
         for batch_results in gen_iterator:
-            # Reconstruct the original dataset problems corresponding to these exact results.
-            # Shorter generations finish earlier and thus yield order differs from prompt order.
-            batch_dataset = [dataset[res["prompt_idx"]] for res in batch_results]
+            # Map prompt_idx back to the ACTIVE (filtered) dataset, not the original full dataset
+            batch_dataset = [active_dataset[res["prompt_idx"]] for res in batch_results]
             
             # Submits to queue to be processed asynchronously
             results_queue.put((mode, batch_dataset, batch_results, mode_stats, mode_data))
@@ -1176,6 +1205,14 @@ def main():
         help="Experiment modes to run (default: all).",
     )
     parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to an existing experiment_results.json to resume from. "
+             "Already-completed problems (matched by 'id') will be skipped.",
+    )
+    parser.add_argument(
         "--use_batch",
         action="store_true",
         help="Use continuous batching for faster but potentially less isolated inference.",
@@ -1266,6 +1303,7 @@ def main():
         results_path=results_path,
         use_batch=args.use_batch,
         use_sequential=args.sequential,
+        resume_path=args.resume,
     )
 
     print(f"\n📊 Final results saved to {results_path}")

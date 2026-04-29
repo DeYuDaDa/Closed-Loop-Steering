@@ -258,11 +258,12 @@ def run_isolated_batch_inference(
                     use_cache=True,
                     return_dict=True,
                 )
-                
-            last_hidden = out.last_hidden_state[:, -1:, :] # [B, 1, hidden_dim]
-            logits_1 = model.lm_head(last_hidden).squeeze(1) # [B, vocab_size]
-            logits_1 = run_experiment._safe_score_range_clean(logits_1, eos_id)
-            past_key_values = out.past_key_values
+                last_hidden = out.last_hidden_state[:, -1:, :]  # [B, 1, hidden_dim]
+                logits_1 = model.lm_head(last_hidden).squeeze(1)  # [B, vocab_size]
+                logits_1 = run_experiment._safe_score_range_clean(logits_1, eos_id)
+                past_key_values = out.past_key_values
+            # Explicitly release the large prefill output (last_hidden_state is huge)
+            del out, last_hidden
             if replay_hook_handle is not None:
                 replay_hook_handle.remove()
                 replay_hook_handle = None
