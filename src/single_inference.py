@@ -280,7 +280,22 @@ def run_isolated_batch_inference(
                 hook_handle = layer.register_forward_hook(hook_fn)
             
             if monitor is not None:
-                monitor(input_ids, logits_1)
+                # Strip left-padding before passing to monitor.
+                # The n-gram repetition detector uses token identity; padding zeros must not
+                # be seen as repeated content or they silently trigger trigger_perturbation.
+                # Use attention_mask to extract only real tokens per sequence.
+                unpadded_for_monitor = [
+                    input_ids[j, attention_mask[j].bool()].unsqueeze(0)
+                    for j in range(actual_bs)
+                ]
+                # For monitor, all must be same length; use longest real token count
+                max_real = max(u.shape[1] for u in unpadded_for_monitor)
+                monitor_ids = torch.cat([
+                    torch.cat([torch.full((1, max_real - u.shape[1]), tokenizer.pad_token_id,
+                                         dtype=torch.long, device=device), u], dim=1)
+                    for u in unpadded_for_monitor
+                ], dim=0)
+                monitor(monitor_ids, logits_1)
                 
             next_tok = run_experiment._sample_batch_tokens(logits_1, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)
             next_tok = torch.where(done_mask.unsqueeze(1), torch.full_like(next_tok, eos_id), next_tok)
@@ -307,7 +322,18 @@ def run_isolated_batch_inference(
                 
                 state.active_mask = ~done_mask
                 if monitor is not None:
-                    monitor(input_ids, logits_1)
+                    # Pass only real (non-padded) token history to avoid false n-gram hits on pad tokens.
+                    unpadded_for_monitor = [
+                        input_ids[j, attention_mask[j].bool()].unsqueeze(0)
+                        for j in range(actual_bs)
+                    ]
+                    max_real = max(u.shape[1] for u in unpadded_for_monitor)
+                    monitor_ids = torch.cat([
+                        torch.cat([torch.full((1, max_real - u.shape[1]), tokenizer.pad_token_id,
+                                             dtype=torch.long, device=device), u], dim=1)
+                        for u in unpadded_for_monitor
+                    ], dim=0)
+                    monitor(monitor_ids, logits_1)
                 
                 next_tok = run_experiment._sample_batch_tokens(logits_1, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)
                 next_tok = torch.where(done_mask.unsqueeze(1), torch.full_like(next_tok, eos_id), next_tok)
