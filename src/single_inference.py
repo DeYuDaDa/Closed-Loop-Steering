@@ -396,17 +396,16 @@ def run_isolated_batch_inference(
                 t.input_ids = pure_input_ids.cpu()  # Park back to CPU until next chunk
                 active_queue.append(t)
                 
-        if len(chunk_results) > 0:
-            yield chunk_results
-            
-        # Absolute destruction
         try:
-            del out, last_hidden, logits_1, next_tok
+            del out, last_hidden, logits_1, next_tok, pure_input_ids
         except NameError:
             pass
-        del state, pid, monitor, batched_input_ids, batched_attention_mask, input_ids, attention_mask, past_key_values, chunk_results, batch_tasks
+        del state, pid, monitor, batched_input_ids, batched_attention_mask, input_ids, attention_mask, past_key_values, batch_tasks
         torch.cuda.empty_cache()
         gc.collect()
+
+        if len(chunk_results) > 0:
+            yield chunk_results
 
 def run_single_inference(
     model,
@@ -542,9 +541,16 @@ def run_single_inference(
             done=True,
         )
         
-        yield [run_experiment._slot_to_result(slot, state, 0, tokenizer)]
+        result_dict = run_experiment._slot_to_result(slot, state, 0, tokenizer)
         
-        # Absolute isolation per request
+        # Absolute isolation per request - free GPU memory BEFORE yield pauses the function
+        try:
+            del out, logits_1, next_tok, text
+        except NameError:
+            pass
         del state, pid, monitor, enc, input_ids, attention_mask, past_key_values, slot
+
         torch.cuda.empty_cache()
         gc.collect()
+
+        yield [result_dict]
