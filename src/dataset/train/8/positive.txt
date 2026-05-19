@@ -1,0 +1,68 @@
+<think>
+Okay, I need to find $\tan^2(\angle AEP)$. Let $\alpha = \angle AEP = \angle BFP = \angle CDP$.
+Let's review the geometric constraints. We have an equilateral triangle $\triangle ABC$ with side $s = 55$.
+The segments on the sides are:
+$D \in BC \implies BD = 7, CD = 55 - 7 = 48$.
+$E \in CA \implies CE = 30, AE = 55 - 30 = 25$.
+$F \in AB \implies AF = 40, BF = 55 - 40 = 15$.
+
+Let $x, y, z$ be the perpendicular distances from $P$ to the sides $BC, CA, AB$ respectively.
+A known property for any point $P$ inside an equilateral triangle is that the sum of these distances equals the altitude $h$.
+$h = s \frac{\sqrt{3}}{2} = 55 \frac{\sqrt{3}}{2}$. So $x + y + z = \frac{55\sqrt{3}}{2}$.
+
+Let's analyze the angle condition rigorously. "$\measuredangle AEP = \alpha$" means the angle between the ray $EA$ and the segment $EP$ is $\alpha$.
+Let $P_E$ be the perpendicular projection of $P$ onto the line $AC$. 
+Since $P$ is inside the triangle and $\alpha$ is acute (which we can assume safely for interior concurrent points), the projection $P_E$ must lie on the ray $EA$.
+In the right triangle $\triangle P E P_E$, the leg opposite to $\alpha$ is $P P_E = y$.
+The adjacent leg is $E P_E = y \cot\alpha$.
+Since $P_E$ lies on the ray $EA$ (meaning $A, P_E, E, C$ are on the line, and $P_E$ is on the $A$-side of $E$), the distance from $C$ to $P_E$ is:
+$C P_E = CE + E P_E = 30 + y \cot\alpha$.
+The distance from $A$ to $P_E$ is:
+$A P_E = AE - E P_E = 25 - y \cot\alpha$.
+
+By exact symmetry, let's analyze the other two sides.
+For $F \in AB$, $\angle BFP = \alpha$. The projection $P_F$ lies on the ray $FB$.
+$F P_F = z \cot\alpha$.
+$A P_F = AF + F P_F = 40 + z \cot\alpha$.
+$B P_F = BF - F P_F = 15 - z \cot\alpha$.
+
+For $D \in BC$, $\angle CDP = \alpha$. The projection $P_D$ lies on the ray $DC$.
+$D P_D = x \cot\alpha$.
+$B P_D = BD + D P_D = 7 + x \cot\alpha$.
+$C P_D = CD - D P_D = 48 - x \cot\alpha$.
+
+Now, to ensure that the perpendiculars from these specific points $P_E, P_F, P_D$ concurrently meet at a single point $P$, Carnot's Theorem must be satisfied.
+Carnot's Theorem states: $A P_F^2 - B P_F^2 + B P_D^2 - C P_D^2 + C P_E^2 - A P_E^2 = 0$.
+Let's substitute our expressions into this identity to isolate $\cot\alpha$. Let $K = \cot\alpha$.
+
+Term 1: $A P_F^2 - B P_F^2 = (40 + zK)^2 - (15 - zK)^2$
+$= (1600 + 80zK + z^2K^2) - (225 - 30zK + z^2K^2) = 1375 + 110zK$.
+
+Term 2: $B P_D^2 - C P_D^2 = (7 + xK)^2 - (48 - xK)^2$
+$= (49 + 14xK + x^2K^2) - (2304 - 96xK + x^2K^2) = -2255 + 110xK$.
+
+Term 3: $C P_E^2 - A P_E^2 = (30 + yK)^2 - (25 - yK)^2$
+$= (900 + 60yK + y^2K^2) - (625 - 50yK + y^2K^2) = 275 + 110yK$.
+
+Summing these three pairs, the result must be 0:
+$(1375 + 110zK) + (-2255 + 110xK) + (275 + 110yK) = 0$.
+Combine the constants: $1375 - 2255 + 275 = -605$.
+Combine the variable terms: $110K(x + y + z)$.
+So, $-605 + 110K(x + y + z) = 0 \implies 110K(x + y + z) = 605$.
+
+Wait, I established earlier that $x + y + z = \frac{55\sqrt{3}}{2}$.
+Let's substitute this known condition back in:
+$110K \left( \frac{55\sqrt{3}}{2} \right) = 605$.
+$55 \cdot 55\sqrt{3} \cdot K = 605$.
+$3025\sqrt{3} \cdot K = 605$.
+$K = \frac{605}{3025\sqrt{3}} = \frac{1}{5\sqrt{3}}$.
+
+Recall that $K = \cot\alpha$. So we have $\cot\alpha = \frac{1}{5\sqrt{3}}$.
+The problem asks for $\tan^2\alpha$.
+Since $\tan\alpha = \frac{1}{\cot\alpha}$, we get $\tan\alpha = 5\sqrt{3}$.
+Squaring this gives $\tan^2\alpha = (5\sqrt{3})^2 = 25 \times 3 = 75$.
+
+Let me double check the signs. If $\alpha$ was defined relative to the other ray, the signs on $K$ would flip, but the sum of squares difference handles the orientation implicitly. The geometry dictates $P$ is inside, and my definitions of $A P_E$ vs $C P_E$ followed strictly from the ray directions. The algebra collapses beautifully, strongly validating the result.
+</think>
+
+The value of $\tan^2(\measuredangle AEP)$ is \boxed{75}.

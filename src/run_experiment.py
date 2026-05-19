@@ -56,6 +56,7 @@ from transformers import (
     AutoModelForCausalLM,
     LogitsProcessorList,
 )
+from transformers.cache_utils import DynamicCache
 
 from config import (
     MODEL_PATH,
@@ -71,6 +72,8 @@ from config import (
     MAX_CONCURRENT_SEQS,
     TEMPERATURE,
     TOP_P,
+    TOP_K,
+    MIN_P,
     DEFAULT_DTYPE,
     DEVICE_MAP,
     DO_SAMPLE,
@@ -82,6 +85,7 @@ from config import (
     RESULTS_TIMESTAMP_FMT,
     JSON_INDENT,
     ENABLE_THINKING,
+    GLOBAL_SEED,
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
@@ -114,6 +118,19 @@ from loaders.zebra_logic_loader import (
     extract_answer_zebra,
     check_answer_zebra,
 )
+
+
+# ======================== Reproducibility ========================
+
+def set_seed(seed: int):
+    """Fix all relevant RNG sources for reproducible experiments."""
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    print(f"🔒 Global seed fixed to {seed}")
 
 
 def _normalize_vector(v: torch.Tensor) -> torch.Tensor:
@@ -230,62 +247,122 @@ class _Slot:
     done: bool = False
 
 
+# def _stack_and_pad_kv_caches(slots: list):
+#     """Left-pad and batch KV caches for a single batched forward pass.
+#     Returns (batched_pkv, max_kv_len).
+#     """
+#     if not slots:
+#         return None, 0
+#     # KV length = current full sequence length minus the last token
+#     # (the last token is the one we are about to feed in this step)
+#     max_len = max(s.input_ids.shape[1] - 1 for s in slots)
+    
+#     pkv_0 = slots[0].past_key_values
+#     is_dynamic = hasattr(pkv_0, "key_cache")
+#     num_layers = len(pkv_0.key_cache) if is_dynamic else len(pkv_0)
+    
+#     batched_pkv = []
+#     for layer_idx in range(num_layers):
+#         layer_k, layer_v = [], []
+#         for s in slots:
+#             pkv = s.past_key_values
+#             if hasattr(pkv, "key_cache"):
+#                 k, v = pkv.key_cache[layer_idx], pkv.value_cache[layer_idx]
+#             else:
+#                 k, v = pkv[layer_idx]
+                
+#             pad_left = max_len - k.shape[2]
+#             if pad_left > 0:
+#                 k = torch.nn.functional.pad(k, (0, 0, pad_left, 0), value=0.0)
+#                 v = torch.nn.functional.pad(v, (0, 0, pad_left, 0), value=0.0)
+#             layer_k.append(k)
+#             layer_v.append(v)
+#         batched_pkv.append((torch.cat(layer_k, dim=0), torch.cat(layer_v, dim=0)))
+#     return tuple(batched_pkv), max_len
+# 
+# def _unpad_and_split_kv_caches(batched_pkv, slots: list):
+#     """Split batched KV cache (from model output) back into per-slot caches.
+#     Called only when a slot finishes and the batch must be restructured.
+#     """
+#     is_dynamic = hasattr(batched_pkv, "key_cache")
+#     num_layers = len(batched_pkv.key_cache) if is_dynamic else len(batched_pkv)
+    
+#     for i, s in enumerate(slots):
+#         # s.input_ids already has the newly sampled token appended,
+#         # so the valid KV length in batched_pkv is input_ids.shape[1] - 1
+#         valid_kv_len = s.input_ids.shape[1] - 1
+#         slot_pkv = []
+#         for layer_idx in range(num_layers):
+#             if is_dynamic:
+#                 k = batched_pkv.key_cache[layer_idx][i:i+1, :, -valid_kv_len:, :]
+#                 v = batched_pkv.value_cache[layer_idx][i:i+1, :, -valid_kv_len:, :]
+#             else:
+#                 k = batched_pkv[layer_idx][0][i:i+1, :, -valid_kv_len:, :]
+#                 v = batched_pkv[layer_idx][1][i:i+1, :, -valid_kv_len:, :]
+#             slot_pkv.append((k, v))
+#         s.past_key_values = tuple(slot_pkv)
+
 def _stack_and_pad_kv_caches(slots: list):
     """Left-pad and batch KV caches for a single batched forward pass.
     Returns (batched_pkv, max_kv_len).
     """
     if not slots:
         return None, 0
-    # KV length = current full sequence length minus the last token
-    # (the last token is the one we are about to feed in this step)
     max_len = max(s.input_ids.shape[1] - 1 for s in slots)
     
     pkv_0 = slots[0].past_key_values
-    is_dynamic = hasattr(pkv_0, "key_cache")
-    num_layers = len(pkv_0.key_cache) if is_dynamic else len(pkv_0)
-    
-    batched_pkv = []
+    is_official_dynamic = (
+        "DynamicCache" in str(type(pkv_0)) and 
+        hasattr(pkv_0, "layers")
+    )
+    num_layers = len(pkv_0)
+
+    # 初始化一个新的官方DynamicCache（保持类型，模型要求！）
+    batched_cache = DynamicCache()
     for layer_idx in range(num_layers):
         layer_k, layer_v = [], []
         for s in slots:
             pkv = s.past_key_values
-            if hasattr(pkv, "key_cache"):
-                k, v = pkv.key_cache[layer_idx], pkv.value_cache[layer_idx]
-            else:
-                k, v = pkv[layer_idx]
-                
+            layer_cache = pkv.layers[layer_idx]
+            k = layer_cache.keys
+            v = layer_cache.values
+
+            # 左填充
             pad_left = max_len - k.shape[2]
             if pad_left > 0:
                 k = torch.nn.functional.pad(k, (0, 0, pad_left, 0), value=0.0)
                 v = torch.nn.functional.pad(v, (0, 0, pad_left, 0), value=0.0)
             layer_k.append(k)
             layer_v.append(v)
-        batched_pkv.append((torch.cat(layer_k, dim=0), torch.cat(layer_v, dim=0)))
-    return tuple(batched_pkv), max_len
+        
+        # 拼接后存入DynamicCache
+        batched_k = torch.cat(layer_k, dim=0)
+        batched_v = torch.cat(layer_v, dim=0)
+        batched_cache.update(batched_k, batched_v, layer_idx)
+
+    # ✅ 返回DynamicCache对象，不是tuple！模型强制要求
+    return batched_cache, max_len
 
 
-def _unpad_and_split_kv_caches(batched_pkv, slots: list):
-    """Split batched KV cache (from model output) back into per-slot caches.
-    Called only when a slot finishes and the batch must be restructured.
-    """
-    is_dynamic = hasattr(batched_pkv, "key_cache")
-    num_layers = len(batched_pkv.key_cache) if is_dynamic else len(batched_pkv)
+def _unpad_and_split_kv_caches(batched_pkv: DynamicCache, slots: list):
+    """Split batched KV cache back into per-slot DynamicCache objects."""
+    num_layers = len(batched_pkv)
     
     for i, s in enumerate(slots):
-        # s.input_ids already has the newly sampled token appended,
-        # so the valid KV length in batched_pkv is input_ids.shape[1] - 1
         valid_kv_len = s.input_ids.shape[1] - 1
-        slot_pkv = []
+        # 为每个slot创建新的DynamicCache
+        slot_cache = DynamicCache()
+        
         for layer_idx in range(num_layers):
-            if is_dynamic:
-                k = batched_pkv.key_cache[layer_idx][i:i+1, :, -valid_kv_len:, :]
-                v = batched_pkv.value_cache[layer_idx][i:i+1, :, -valid_kv_len:, :]
-            else:
-                k = batched_pkv[layer_idx][0][i:i+1, :, -valid_kv_len:, :]
-                v = batched_pkv[layer_idx][1][i:i+1, :, -valid_kv_len:, :]
-            slot_pkv.append((k, v))
-        s.past_key_values = tuple(slot_pkv)
-
+            layer_cache = batched_pkv.layers[layer_idx]
+            # 截取当前样本的有效KV
+            k = layer_cache.keys[i:i+1, :, -valid_kv_len:, :]
+            v = layer_cache.values[i:i+1, :, -valid_kv_len:, :]
+            # 存入slot的DynamicCache
+            slot_cache.update(k, v, layer_idx)
+        
+        # ✅ 赋值DynamicCache，不是tuple！
+        s.past_key_values = slot_cache
 
 
 def _stack_and_pad_attention_masks(slots: list):
@@ -348,6 +425,16 @@ def _slot_to_result(slot: _Slot, state, slot_idx: int, tokenizer) -> dict:
     Reads trajectory data from the global state at physical index slot_idx.
     """
     generated_ids = slot.input_ids[0, slot.input_len:]
+
+    # Strip everything after first EOS token (for static batching padded ends)
+    eos_id = tokenizer.eos_token_id
+    if isinstance(eos_id, list):
+        eos_id = eos_id[0]
+        
+    eos_positions = (generated_ids == eos_id).nonzero(as_tuple=True)[0]
+    if len(eos_positions) > 0:
+        generated_ids = generated_ids[:eos_positions[0] + 1]
+
     if tokenizer.pad_token_id is not None:
         mask = generated_ids != tokenizer.pad_token_id
         generated_ids = generated_ids[mask]
@@ -390,16 +477,50 @@ def _sample_batch_tokens(
     do_sample: bool,
     temperature: float,
     top_p: float,
+    top_k: int = 0,
+    min_p: float = 0.0,
 ) -> torch.Tensor:
-    """Sample next tokens for a [K, V] logit matrix. Returns [K, 1]."""
+    """Sample next tokens for a [K, V] logit matrix. Returns [K, 1].
+
+    Sampling pipeline (in order):
+      1. Temperature scaling
+      2. Top-K hard cap  (if top_k > 0)
+      3. Min-P dynamic floor  (if min_p > 0.0)
+         Discard tokens where P < min_p * P_max.
+         Adapts to model confidence: strict when confident, lenient when uncertain.
+      4. Top-P nucleus filter  (if top_p < 1.0)
+      5. Softmax + multinomial draw
+    """
     if do_sample:
         logits_scaled = logits_2d / max(temperature, 1e-6)
+
+        # --- Stage 1: Top-K hard cap ---
+        # Physically removes all tokens outside the top-k, preventing long-tail
+        # noise from polluting the nucleus under any Top-P setting.
+        if top_k > 0:
+            top_k_effective = min(top_k, logits_scaled.size(-1))
+            kth_vals = torch.topk(logits_scaled, top_k_effective, dim=-1)[0][..., -1, None]
+            logits_scaled = logits_scaled.masked_fill(logits_scaled < kth_vals, -float("inf"))
+
+        # --- Stage 2: Min-P dynamic floor ---
+        # Threshold = min_p * P_max:  tight when the model is confident (high P_max),
+        # relaxed when the model is uncertain (low P_max).
+        # This breaks degeneration cascades by preventing low-quality tokens from
+        # re-entering the pool after context contamination.
+        if min_p > 0.0:
+            probs_tmp = torch.softmax(logits_scaled, dim=-1)
+            top_prob = probs_tmp.max(dim=-1, keepdim=True)[0]  # [K, 1]
+            scaled_min_p = min_p * top_prob
+            logits_scaled = logits_scaled.masked_fill(probs_tmp < scaled_min_p, -float("inf"))
+
+        # --- Stage 3: Top-P nucleus filter ---
         sorted_logits, sorted_idx = torch.sort(logits_scaled, descending=True, dim=-1)
         cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
         sorted_remove = cumulative_probs - torch.softmax(sorted_logits, dim=-1) > top_p
         sorted_logits[sorted_remove] = -float("inf")
         logits_final = torch.full_like(logits_scaled, -float("inf"))
         logits_final.scatter_(1, sorted_idx, sorted_logits)
+
         probs = torch.softmax(logits_final, dim=-1)
         next_tok = torch.multinomial(probs, num_samples=1)  # [K, 1]
     else:
@@ -488,12 +609,15 @@ def run_continuous_batching_generation(
         """Reset global state fields for a freshly occupied slot."""
         state.active_mask[slot_idx] = True
         state.is_converged[slot_idx] = False
+        state.margin[slot_idx] = float("inf")
         state.ema_entropy[slot_idx] = 0.0
         state.ema_trajectory[slot_idx] = []
         state.alpha_trajectory[slot_idx] = []
         state.entropy_trajectory[slot_idx] = []
         state.intervention_start_step[slot_idx] = None
         state.intervention_end_step[slot_idx] = None
+        state.step_count[slot_idx] = 0
+        state.intervention_active[slot_idx] = False
         if mode == "Continuous":
             state.alpha[slot_idx] = CONTINUOUS_ALPHA
         elif mode == "Continuous_Linear":
@@ -505,6 +629,13 @@ def run_continuous_batching_generation(
                 pid.integral[slot_idx] = 0.0
             if hasattr(pid, "prev_error"):
                 pid.prev_error[slot_idx] = 0.0
+            if hasattr(pid, "is_first_step"):
+                pid.is_first_step[slot_idx] = True
+                
+        if hasattr(state, "low_entropy_count"):
+            state.low_entropy_count[slot_idx] = 0
+            state.trigger_perturbation[slot_idx] = False
+            state.cooldown_counter[slot_idx] = 0
 
     def _prefill_slot(slot_idx: int, prompt_idx: int) -> _Slot:
         """Tokenise + prefill one prompt into physical slot slot_idx."""
@@ -558,11 +689,12 @@ def run_continuous_batching_generation(
             dummy_ids = torch.zeros(
                 (max_concurrent_seqs, enc.input_ids.shape[1]), dtype=torch.long, device=device
             )
+            dummy_ids[slot_idx] = enc.input_ids[0]
             monitor(dummy_ids, dummy_logits)
             state.active_mask = saved_mask
 
         # Sample the very first token from the prefill logits.
-        first_tok = _sample_batch_tokens(first_logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P)  # [1, 1]
+        first_tok = _sample_batch_tokens(first_logits_2d, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)  # [1, 1]
         slot.input_ids = torch.cat([slot.input_ids, first_tok], dim=1)
         slot.attention_mask = torch.ones(
             1, slot.input_ids.shape[1], dtype=torch.long, device=device
@@ -641,12 +773,18 @@ def run_continuous_batching_generation(
 
             # Update StateMonitor once for all active slots.
             if monitor is not None:
+                max_L = max(active_list[i].input_ids.shape[1] for i in range(len(active_list)))
+                ids_buf = torch.zeros((max_concurrent_seqs, max_L), dtype=torch.long, device=device)
+                
                 for list_i, slot_i in enumerate(active_indices):
                     dummy_logits_buf[slot_i] = logits_K[list_i]
-                monitor(dummy_ids_buf, dummy_logits_buf)
+                    L = active_list[list_i].input_ids.shape[1]
+                    ids_buf[slot_i, -L:] = active_list[list_i].input_ids[0, :]
+                    
+                monitor(ids_buf, dummy_logits_buf)
 
             # GPU-side EOS / max-len detection (single CPU sync).
-            next_tokens = _sample_batch_tokens(logits_K, DO_SAMPLE, TEMPERATURE, TOP_P)  # [K, 1]
+            next_tokens = _sample_batch_tokens(logits_K, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)  # [K, 1]
             next_flat   = next_tokens.squeeze(1)                         # [K]
             eos_hit     = next_flat.eq(eos_tensor)                       # [K] bool GPU
             n_gen_arr   = torch.tensor(
@@ -736,6 +874,9 @@ def run_full_experiment(
     max_concurrent_seqs: int = MAX_CONCURRENT_SEQS,
     dataset_type: str = "aime",
     results_path: str = None,
+    use_batch: bool = False,
+    use_sequential: bool = False,
+    resume_path: str = None,
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -876,8 +1017,6 @@ def run_full_experiment(
         else:
             prompts = collate_prompts_aime(dataset)
 
-        print(f"  Using CONTINUOUS BATCHING (max_concurrent_seqs={max_concurrent_seqs}) for ALL modes...")
-        
         mode_data = {
             "accuracy": 0.0,
             "correct_count": 0,
@@ -898,19 +1037,60 @@ def run_full_experiment(
             "mode_repetitions": []
         }
 
-        # Initialize progress bar
-        pbar = tqdm(total=len(dataset), desc=f"Evaluating {mode}", unit="sample")
+        # ---- Resume logic: skip already-completed problems ----
+        completed_ids = set()
+        if resume_path and os.path.isfile(resume_path):
+            try:
+                with open(resume_path, "r", encoding="utf-8") as rf:
+                    existing = json.load(rf)
+                existing_mode = existing.get(mode, {})
+                existing_per_problem = existing_mode.get("per_problem", [])
+                if existing_per_problem:
+                    # Pre-populate mode_data and mode_stats with completed results
+                    mode_data["per_problem"] = existing_per_problem
+                    for d in existing_per_problem:
+                        completed_ids.add(str(d["id"]))
+                        if d.get("correct", False):
+                            mode_stats["mode_correct"] += 1
+                        mode_stats["mode_tokens_total"] += d.get("num_tokens", 0)
+                        mode_stats["mode_repetitions"].append(d.get("repetition", 0.0))
+                    print(f"  ↩️  [{mode}] Resuming: {len(completed_ids)} problems already done, "
+                          f"{len(dataset) - len(completed_ids)} remaining.")
+            except Exception as e:
+                print(f"  ⚠️  Could not load resume file: {e}. Starting fresh.")
 
-        # Create generator — continuous batching eliminates straggler padding waste
-        gen_iterator = run_continuous_batching_generation(
-            model, tokenizer, prompts, mode, control_vectors,
-            max_concurrent_seqs=max_concurrent_seqs
-        )
+        # Filter dataset and prompts to only unfinished problems
+        if completed_ids:
+            filtered = [(i, p, d) for i, (p, d) in enumerate(zip(prompts, dataset))
+                        if str(d.get("id", i)) not in completed_ids]
+            prompts   = [x[1] for x in filtered]
+            active_dataset = [x[2] for x in filtered]
+        else:
+            active_dataset = dataset
+
+        pbar = tqdm(total=len(active_dataset), desc=f"Evaluating {mode}", unit="sample")
+        if use_batch:
+            print(f"  Using CONTINUOUS BATCHING (max_concurrent_seqs={max_concurrent_seqs}) for ALL modes...")
+            gen_iterator = run_continuous_batching_generation(
+                model, tokenizer, prompts, mode, control_vectors,
+                max_concurrent_seqs=max_concurrent_seqs
+            )
+        elif use_sequential:
+            print(f"  Using SEQUENTIAL INFERENCE (batch_size=1) for ALL modes...")
+            from single_inference import run_single_inference
+            gen_iterator = run_single_inference(
+                model, tokenizer, prompts, mode, control_vectors
+            )
+        else:
+            print(f"  Using ISOLATED BATCH INFERENCE (Static Batching, batch_size={max_concurrent_seqs}) for ALL modes...")
+            from single_inference import run_isolated_batch_inference
+            gen_iterator = run_isolated_batch_inference(
+                model, tokenizer, prompts, mode, control_vectors, batch_size=max_concurrent_seqs
+            )
 
         for batch_results in gen_iterator:
-            # Reconstruct the original dataset problems corresponding to these exact results.
-            # Shorter generations finish earlier and thus yield order differs from prompt order.
-            batch_dataset = [dataset[res["prompt_idx"]] for res in batch_results]
+            # Map prompt_idx back to the ACTIVE (filtered) dataset, not the original full dataset
+            batch_dataset = [active_dataset[res["prompt_idx"]] for res in batch_results]
             
             # Submits to queue to be processed asynchronously
             results_queue.put((mode, batch_dataset, batch_results, mode_stats, mode_data))
@@ -1006,6 +1186,8 @@ def run_full_experiment(
 
 def main():
     """Main entry point for the AIME benchmark experiment."""
+    set_seed(GLOBAL_SEED)
+
     parser = argparse.ArgumentParser(
         description="Closed-Loop Steering System — AIME Benchmark Evaluation"
     )
@@ -1021,6 +1203,24 @@ def main():
         nargs="+",
         default=None,
         help="Experiment modes to run (default: all).",
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to an existing experiment_results.json to resume from. "
+             "Already-completed problems (matched by 'id') will be skipped.",
+    )
+    parser.add_argument(
+        "--use_batch",
+        action="store_true",
+        help="Use continuous batching for faster but potentially less isolated inference.",
+    )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Use strictly sequential inference (batch_size=1). Overrides other batching methods.",
     )
     args = parser.parse_args()
 
@@ -1065,6 +1265,7 @@ def main():
         MODEL_PATH,
         torch_dtype=model_dtype,
         device_map=DEVICE_MAP,
+        attn_implementation="flash_attention_2",
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
@@ -1100,6 +1301,9 @@ def main():
         max_concurrent_seqs=MAX_CONCURRENT_SEQS,
         dataset_type=dataset_type,
         results_path=results_path,
+        use_batch=args.use_batch,
+        use_sequential=args.sequential,
+        resume_path=args.resume,
     )
 
     print(f"\n📊 Final results saved to {results_path}")

@@ -1,0 +1,64 @@
+<think>
+Okay, so I need to find the area of the square $ABCD$. 
+Let's clearly write down the given conditions:
+1. $ABCD$ is a square.
+2. $P$ is a point on its circumcircle.
+3. $PA \cdot PC = 56$.
+4. $PB \cdot PD = 90$.
+
+Let's set up a coordinate system to represent this mathematically. It usually makes things rigorous.
+Let the center of the square $ABCD$ be at the origin $(0,0)$. 
+Let the circumcircle have radius $R$. Since the circumcircle passes through the vertices of the square, the vertices $A, B, C, D$ lie on this circle $x^2 + y^2 = R^2$.
+To make the coordinates simple, let's align the vertices with the axes. 
+Let $A = (R, 0)$, $B = (0, R)$, $C = (-R, 0)$, and $D = (0, -R)$.
+Wait, let me double-check if this forms a square. The distance between adjacent vertices, say $A$ and $B$, is $\sqrt{(R-0)^2 + (0-R)^2} = \sqrt{R^2 + R^2} = R\sqrt{2}$. Yes, all sides are equal and angles are 90 degrees.
+The area of the square will be side squared: $(R\sqrt{2})^2 = 2R^2$. So my ultimate goal is to find $2R^2$.
+
+Now, let point $P$ be on the circumcircle. We can express $P$ using an angle $\theta$:
+$P = (R\cos\theta, R\sin\theta)$.
+
+Let's use the distance formula to express the given conditions.
+First, find $PA^2$ and $PC^2$:
+$PA^2 = (R\cos\theta - R)^2 + (R\sin\theta - 0)^2 = R^2\cos^2\theta - 2R^2\cos\theta + R^2 + R^2\sin^2\theta = 2R^2 - 2R^2\cos\theta$.
+$PC^2 = (R\cos\theta - (-R))^2 + (R\sin\theta - 0)^2 = R^2\cos^2\theta + 2R^2\cos\theta + R^2 + R^2\sin^2\theta = 2R^2 + 2R^2\cos\theta$.
+
+According to the problem, $PA \cdot PC = 56$. Let's square this condition to avoid square roots:
+$(PA \cdot PC)^2 = PA^2 \cdot PC^2 = 56^2$.
+Substitute the expressions we just derived:
+$(2R^2 - 2R^2\cos\theta)(2R^2 + 2R^2\cos\theta) = 56^2$
+$4R^4(1 - \cos\theta)(1 + \cos\theta) = 3136$
+$4R^4(1 - \cos^2\theta) = 3136$
+$4R^4\sin^2\theta = 3136 \implies R^4\sin^2\theta = 784 \implies R^2|\sin\theta| = 28$.
+
+Now, let's use the second condition: $PB \cdot PD = 90$.
+Let's find $PB^2$ and $PD^2$:
+$PB^2 = (R\cos\theta - 0)^2 + (R\sin\theta - R)^2 = R^2\cos^2\theta + R^2\sin^2\theta - 2R^2\sin\theta + R^2 = 2R^2 - 2R^2\sin\theta$.
+$PD^2 = (R\cos\theta - 0)^2 + (R\sin\theta - (-R))^2 = R^2\cos^2\theta + R^2\sin^2\theta + 2R^2\sin\theta + R^2 = 2R^2 + 2R^2\sin\theta$.
+
+Squaring the second given condition:
+$(PB \cdot PD)^2 = PB^2 \cdot PD^2 = 90^2 = 8100$.
+$(2R^2 - 2R^2\sin\theta)(2R^2 + 2R^2\sin\theta) = 8100$
+$4R^4(1 - \sin^2\theta) = 8100$
+$4R^4\cos^2\theta = 8100 \implies R^4\cos^2\theta = 2025 \implies R^2|\cos\theta| = 45$.
+
+I have two rigorous equations now:
+1) $R^2|\sin\theta| = 28$
+2) $R^2|\cos\theta| = 45$
+
+To eliminate $\theta$, I can square both equations and add them together, taking advantage of the identity $\sin^2\theta + \cos^2\theta = 1$.
+$(R^2|\sin\theta|)^2 + (R^2|\cos\theta|)^2 = 28^2 + 45^2$
+$R^4\sin^2\theta + R^4\cos^2\theta = 784 + 2025$
+$R^4(\sin^2\theta + \cos^2\theta) = 2809$
+$R^4 = 2809$.
+
+Taking the square root, $R^2 = \sqrt{2809}$. 
+Let's check if 2809 is a perfect square. $50^2 = 2500$, $60^2 = 3600$. It ends in 9, so it could be $53^2$ or $57^2$. 
+$53 \times 53 = 2500 + 150 + 150 + 9 = 2809$. Perfect.
+So $R^2 = 53$.
+
+Going back to my initial setup, the area of the square is $2R^2$.
+Area $= 2 \times 53 = 106$.
+Everything is consistent and all conditions were used strictly. No contradictions found.
+</think>
+
+The area of square $ABCD$ is \boxed{106}.

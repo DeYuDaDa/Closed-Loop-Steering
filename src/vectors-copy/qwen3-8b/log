@@ -1,0 +1,34 @@
+
+  ✅ Raw CAA vector extracted:
+    shape = [4096]
+    norm  = 63.1710
+  Activations collected: 634 vectors of dim 4096
+
+  💾 Raw vector saved to ./vectors/qwen3-8b/critic_raw.pt
+
+============================================================
+  Manifold Projection (PCA purification)
+============================================================
+[ManifoldProjector] Fitted PCA with 10 components.
+  Explained variance ratio: 0.4070
+[ManifoldProjector] Components saved to ./vectors/qwen3-8b/pca_components.npy
+
+  💾 Purified vector saved to ./vectors/qwen3-8b/critic.pt
+
+============================================================
+  EXTRACTION COMPLETE — Summary
+============================================================
+  Data pairs used:        317
+  Target layer:           24
+  Hidden dim:             4096
+  PCA components:         10
+  Raw vector norm:        63.1710
+  Purified vector norm:   1.0000
+  Explained variance:     0.4070
+
+  Output files:
+    ./vectors/qwen3-8b/critic_raw.pt
+    ./vectors/qwen3-8b/critic.pt
+    ./vectors/qwen3-8b/pca_components.npy
+
+  🎉 Ready for use in run_experiment.py!

@@ -1,3 +1,0 @@
-Dynamic_Spherical 最优：81.25%
-Continuous 次之：78.13%
-Baseline 最低：71.88%

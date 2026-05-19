@@ -204,3 +204,29 @@ python evaluate_dtr_offline.py \
 ## 七、论文中的消融声明模板
 
 > *"To ensure a mathematically fair comparison in the 'w/o SLERP' ablation, the linear intervention coefficient α_linear was calibrated via Equal Orthogonal Projection: α_linear = sin(α_slerp × π/2). Thus, α_slerp ∈ {0.3, 0.45} strictly corresponds to α_linear ∈ {0.45, 0.65} scaled by the hidden state norm."*
+
+
+---
+
+提取：
+cd /path/to/src
+
+# 默认参数（target_layer=24，来自 config）
+python extract_grounding_vector.py
+
+# 自定义
+python extract_grounding_vector.py \
+    --target_layer 24 \
+    --learning_rate 0.01 \
+    --l2_penalty 0.01 \
+    --contrastive_weight 1.0 \
+    --max_epochs 80
+
+
+python extract_grounding_vector.py \
+    --data_dir /root/Closed-Loop-Steering-System/src/dataset/train_opus/distilled_corpus_400k_with_cot-filtered.jsonl \
+    --target_layer 24 \
+    --learning_rate 0.01 \
+    --l2_penalty 0.1 \
+    --max_epochs 1 \
+    --norm_ceiling 30.0
