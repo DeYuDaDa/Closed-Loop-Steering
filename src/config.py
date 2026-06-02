@@ -4,12 +4,56 @@ Closed-Loop Steering System — Centralized Configuration
 All hyperparameters for the 5-module pipeline are defined here.
 """
 
-# ======================== Model & System ========================
-MODEL_PATH = "/root/autodl-tmp/qwen3-8b"
-LAYER_ID = 24                 # Target transformer layer for hook injection
+# ======================== Model Selection ========================
+# Supported options: "qwen3-8b", "deepseek-1.5b"
+ACTIVE_MODEL = "deepseek-1.5b"  # Change this to switch models
+
+# Model-specific parameters
+MODEL_CONFIGS = {
+    "qwen3-8b": {
+        "path": "/root/autodl-tmp/qwen3-8b",
+        "layer_id": 24,           # Layer index for 36-layer model (2/3 position)
+        "vector_dir": "./vectors-copy/qwen3-8b",
+        "endoftext_id": 151643,
+        "enable_thinking": True,
+    },
+    "deepseek-1.5b": {
+        "paths": [
+            "/root/autodl-tmp/DeepSeek-R1-Distill-Qwen-1.5B",
+            "/root/autodl-tmp/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+        ],
+        "layer_id": 19,           # Layer index for 28-layer model (2/3 position: 19; 3/4 position: 21)
+        "vector_dir": "./vectors-copy/DeepSeek-R1-Distill-Qwen-1.5B",
+        "endoftext_id": 151643,   # DeepSeek R1 Distill Qwen uses the same vocab/tokens
+        "enable_thinking": True,
+    }
+}
+
+# Resolve active config
+if ACTIVE_MODEL not in MODEL_CONFIGS:
+    raise ValueError(f"Unknown ACTIVE_MODEL: {ACTIVE_MODEL}. Options: {list(MODEL_CONFIGS.keys())}")
+
+_cfg = MODEL_CONFIGS[ACTIVE_MODEL]
+
+# Resolve model path
+if ACTIVE_MODEL == "deepseek-1.5b":
+    import os
+    MODEL_PATH = _cfg["paths"][0]
+    for p in _cfg["paths"]:
+        if os.path.exists(p):
+            MODEL_PATH = p
+            break
+else:
+    MODEL_PATH = _cfg["path"]
+
+LAYER_ID = _cfg["layer_id"]
+VECTOR_DIR = _cfg["vector_dir"]
+ENDOFTEXT_ID = _cfg["endoftext_id"]
+ENABLE_THINKING = _cfg["enable_thinking"]
+
 DEFAULT_DTYPE = "bfloat16"    # Options: "float16", "bfloat16", "float32"
 DEVICE_MAP = "auto"           # Options: "auto", "cuda:0", "cpu"
-ENABLE_THINKING = True
+
 
 # CUDA Memory Management
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,garbage_collection_threshold:0.7"
@@ -68,8 +112,8 @@ CONTINUOUS_ALPHA = 0.45       # Default SLERP rotation angle for Continuous mode
 CONTINUOUS_LINEAR_ALPHA = 0.3  # Calibrated linear coefficient (matches SLERP=0.30 sweet spot)
 CAPTURE_HIDDEN_STATES = False  # Whether to log all hidden states during hook (memory intensive)
 
-# ======================== Vector Paths ========================
-VECTOR_DIR = "./vectors-copy/qwen3-8b"
+# VECTOR_DIR resolved above dynamically from ACTIVE_MODEL
+# VECTOR_DIR = "./vectors-copy/qwen3-8b"
 
 # ======================== Generation ========================
 DO_SAMPLE = True
@@ -78,7 +122,8 @@ TOP_P = 0.95
 TOP_K = 20                    # Hard cap on sampling pool (0 = disabled). Prevents long-tail noise tokens.
 MIN_P = 0.05                  # Dynamic floor: discard tokens with P < min_p * P_max. Adapts to model confidence.
 MAX_NEW_TOKENS = 4096*8
-ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
+# ENDOFTEXT_ID resolved above dynamically from ACTIVE_MODEL
+# ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 
 # ======================== Experiment ========================
