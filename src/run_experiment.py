@@ -118,6 +118,20 @@ from loaders.zebra_logic_loader import (
     extract_answer_zebra,
     check_answer_zebra,
 )
+from loaders.boolean_expressions_loader import (
+    load_boolean_expressions_dataset,
+    build_boolean_expressions_prompt,
+    extract_answer_boolean_expressions,
+    check_answer_boolean_expressions,
+)
+from loaders.cruxeval_loader import (
+    load_cruxeval_dataset,
+    build_cruxeval_output_prompt,
+    build_cruxeval_input_prompt,
+    extract_answer_cruxeval,
+    check_answer_cruxeval_output,
+    check_answer_cruxeval_input,
+)
 
 
 # ======================== Data Utilities (JSONL & MD5) ========================
@@ -1128,6 +1142,22 @@ def run_full_experiment(
                     predicted = extract_answer_zebra(result["text"])
                     expected = eval_item["answer"]
                     is_correct = check_answer_zebra(predicted, expected)
+                elif dataset_type == "boolean_expressions":
+                    predicted = extract_answer_boolean_expressions(result["text"])
+                    expected = eval_item["answer"]
+                    is_correct = check_answer_boolean_expressions(predicted, expected)
+                elif dataset_type == "cruxeval_output":
+                    predicted = extract_answer_cruxeval(result["text"])
+                    expected = eval_item["output"]
+                    is_correct = check_answer_cruxeval_output(
+                        eval_item["code"], eval_item["input"], expected, predicted
+                    )
+                elif dataset_type == "cruxeval_input":
+                    predicted = extract_answer_cruxeval(result["text"])
+                    expected = eval_item["input"]
+                    is_correct = check_answer_cruxeval_input(
+                        eval_item["code"], eval_item["output"], predicted
+                    )
                 else:
                     predicted = extract_answer_aime(result["text"])
                     expected = eval_item["answer"]
@@ -1209,6 +1239,12 @@ def run_full_experiment(
             prompts = [build_math500_prompt(p["problem"]) for p in dataset]
         elif dataset_type == "zebralogic":
             prompts = [build_zebra_prompt(p["puzzle"], p["question"]) for p in dataset]
+        elif dataset_type == "boolean_expressions":
+            prompts = [build_boolean_expressions_prompt(p["problem"]) for p in dataset]
+        elif dataset_type == "cruxeval_output":
+            prompts = [build_cruxeval_output_prompt(p["code"], p["input"]) for p in dataset]
+        elif dataset_type == "cruxeval_input":
+            prompts = [build_cruxeval_input_prompt(p["code"], p["output"]) for p in dataset]
         else:
             prompts = collate_prompts_aime(dataset)
 
@@ -1441,6 +1477,17 @@ def main():
         dataset_type = "zebralogic"
         print(f"\n📂 Loading ZebraLogic dataset: {dataset_path}")
         dataset = load_zebra_dataset(dataset_path)
+    elif "boolean_expressions" in dataset_path_lower:
+        dataset_type = "boolean_expressions"
+        print(f"\n📂 Loading Boolean Expressions dataset: {dataset_path}")
+        dataset = load_boolean_expressions_dataset(dataset_path)
+    elif "cruxeval" in dataset_path_lower:
+        if "input" in dataset_path_lower:
+            dataset_type = "cruxeval_input"
+        else:
+            dataset_type = "cruxeval_output"
+        print(f"\n📂 Loading CruxEval dataset: {dataset_path} ({dataset_type})")
+        dataset = load_cruxeval_dataset(dataset_path)
     else:
         dataset_type = "aime"
         print(f"\n📂 Loading AIME dataset: {dataset_path}")

@@ -1,0 +1,111 @@
+正在读取CRUXEval JSONL数据集：data\cruxeval.jsonl
+数据集总数: 800 条，已随机抽取 100 条进行测试。
+已开启并发限速：30 RPM (每分钟最大30个请求)，处理中，请稍候...
+🎉 全部任务处理完毕！最终结果已保存至：data\cruxeval_output_sample_result.jsonl
+
+📊 正在统计本次测试的正确率...
+样本 sample_117: ✅ 正确
+样本 sample_279: ✅ 正确
+样本 sample_625: ✅ 正确
+样本 sample_271: ✅ 正确
+样本 sample_714: ✅ 正确
+样本 sample_354: ✅ 正确
+样本 sample_466: ✅ 正确
+样本 sample_787: ✅ 正确
+样本 sample_224: ✅ 正确
+样本 sample_761: ✅ 正确
+样本 sample_420: ✅ 正确
+样本 sample_528: ✅ 正确
+样本 sample_61: ❌ 错误
+样本 sample_757: ✅ 正确
+样本 sample_267: ✅ 正确
+样本 sample_58: ❌ 错误
+样本 sample_494: ✅ 正确
+样本 sample_191: ✅ 正确
+样本 sample_253: ✅ 正确
+样本 sample_350: ✅ 正确
+样本 sample_629: ✅ 正确
+样本 sample_646: ❌ 错误
+样本 sample_205: ❌ 错误
+样本 sample_525: ✅ 正确
+样本 sample_654: ✅ 正确
+样本 sample_314: ✅ 正确
+样本 sample_315: ❌ 错误
+样本 sample_303: ❌ 错误
+样本 sample_345: ✅ 正确
+样本 sample_307: ❌ 错误
+样本 sample_522: ❌ 错误
+样本 sample_602: ✅ 正确
+样本 sample_426: ✅ 正确
+样本 sample_483: ✅ 正确
+样本 sample_542: ✅ 正确
+样本 sample_171: ✅ 正确
+样本 sample_268: ❌ 错误
+样本 sample_64: ❌ 错误
+样本 sample_511: ✅ 正确
+样本 sample_202: ✅ 正确
+样本 sample_572: ❌ 错误
+样本 sample_155: ✅ 正确
+样本 sample_366: ✅ 正确
+样本 sample_295: ❌ 错误
+样本 sample_140: ✅ 正确
+样本 sample_580: ✅ 正确
+样本 sample_188: ✅ 正确
+样本 sample_440: ✅ 正确
+样本 sample_172: ✅ 正确
+样本 sample_167: ✅ 正确
+样本 sample_418: ❌ 错误
+样本 sample_360: ✅ 正确
+样本 sample_391: ❌ 错误
+样本 sample_259: ✅ 正确
+样本 sample_435: ✅ 正确
+样本 sample_541: ✅ 正确
+样本 sample_89: ✅ 正确
+样本 sample_724: ✅ 正确
+样本 sample_59: ✅ 正确
+样本 sample_796: ✅ 正确
+样本 sample_671: ❌ 错误
+样本 sample_664: ✅ 正确
+样本 sample_128: ❌ 错误
+样本 sample_473: ❌ 错误
+样本 sample_564: ✅ 正确
+样本 sample_160: ❌ 错误
+样本 sample_786: ✅ 正确
+样本 sample_310: ❌ 错误
+样本 sample_649: ✅ 正确
+样本 sample_397: ❌ 错误
+样本 sample_455: ✅ 正确
+样本 sample_377: ✅ 正确
+样本 sample_194: ✅ 正确
+样本 sample_178: ✅ 正确
+样本 sample_237: ✅ 正确
+样本 sample_508: ❌ 错误
+样本 sample_565: ✅ 正确
+样本 sample_452: ✅ 正确
+样本 sample_476: ✅ 正确
+样本 sample_335: ❌ 错误
+样本 sample_139: ✅ 正确
+样本 sample_336: ✅ 正确
+样本 sample_275: ❌ 错误
+样本 sample_312: ✅ 正确
+样本 sample_294: ✅ 正确
+样本 sample_73: ✅ 正确
+样本 sample_723: ❌ 错误
+样本 sample_390: ✅ 正确
+样本 sample_333: ✅ 正确
+样本 sample_199: ❌ 错误
+样本 sample_84: ✅ 正确
+样本 sample_760: ✅ 正确
+样本 sample_384: ✅ 正确
+样本 sample_415: ✅ 正确
+样本 sample_613: ❌ 错误
+样本 sample_175: ❌ 错误
+样本 sample_6: ❌ 错误
+样本 sample_517: ❌ 错误
+样本 sample_514: ❌ 错误
+样本 sample_220: ❌ 错误
+----------------------------------------
+成功完成请求的样本数: 100
+模型预测正确样本数: 69
+本次测试最终正确率 (Accuracy): 69.00%
+----------------------------------------
