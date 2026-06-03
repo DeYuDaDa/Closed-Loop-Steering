@@ -120,6 +120,204 @@ from loaders.zebra_logic_loader import (
 )
 
 
+# ======================== Data Utilities (JSONL & MD5) ========================
+
+import hashlib
+
+def calculate_file_md5(file_path: str) -> str:
+    """Calculate the MD5 checksum of a file to uniquely identify vectors/models."""
+    if not file_path or not os.path.exists(file_path):
+        return "not_found"
+    try:
+        hash_md5 = hashlib.md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+    except Exception as e:
+        return f"error: {str(e)}"
+
+
+def save_jsonl_results(data: dict, path: str):
+    """Save in-memory dictionary results into a JSONL file (one line per sample)."""
+    # Group all modes' results for each problem by problem ID
+    problem_map = {}
+    for mode_name, mode_data in data.items():
+        for prob in mode_data.get("per_problem", []):
+            prob_id = prob["id"]
+            if prob_id not in problem_map:
+                problem_map[prob_id] = {
+                    "id": prob_id,
+                    "expected": prob.get("expected", ""),
+                    "modes": {}
+                }
+            # Copy all fields except id and expected to avoid redundancy
+            prob_copy = {k: v for k, v in prob.items() if k not in ("id", "expected")}
+            problem_map[prob_id]["modes"][mode_name] = prob_copy
+
+    # Write each problem mapping as a single-line JSON to minimize whitespace
+    with open(path, "w", encoding="utf-8") as f:
+        for prob_id, prob_data in problem_map.items():
+            f.write(json.dumps(prob_data, ensure_ascii=False) + "\n")
+
+
+def load_jsonl_results(path: str) -> dict:
+    """Load JSONL results back into the nested dictionary format used by the runner."""
+    if not os.path.exists(path):
+        return {}
+    
+    problems = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                problems.append(json.loads(line))
+                
+    data = {}
+    import math
+    for p in problems:
+        prob_id = p["id"]
+        expected = p.get("expected", "")
+        for mode_name, mode_prob_data in p.get("modes", {}).items():
+            if mode_name not in data:
+                data[mode_name] = {
+                    "accuracy": 0.0,
+                    "correct_count": 0,
+                    "total_count": 0,
+                    "repetition": 0.0,
+                    "ppl": float("nan"),
+                    "tokens": 0,
+                    "local_dtr": float("nan"),
+                    "ema_trajectory": [],
+                    "alpha_trajectory": [],
+                    "per_problem": []
+                }
+            
+            prob_entry = {"id": prob_id, "expected": expected, **mode_prob_data}
+            data[mode_name]["per_problem"].append(prob_entry)
+            
+    # Recalculate derivative global metrics for each mode
+    for mode_name, mode_data in data.items():
+        probs = mode_data["per_problem"]
+        total = len(probs)
+        if total > 0:
+            corrects = [p.get("correct", False) for p in probs]
+            correct_count = sum(1 for c in corrects if c)
+            mode_data["correct_count"] = correct_count
+            mode_data["total_count"] = total
+            mode_data["accuracy"] = correct_count / total
+            
+            repetitions = [p.get("repetition", 0.0) for p in probs if "repetition" in p]
+            mode_data["repetition"] = sum(repetitions) / len(repetitions) if repetitions else 0.0
+            
+            tokens_list = [p.get("num_tokens", 0) for p in probs if "num_tokens" in p]
+            mode_data["tokens"] = int(sum(tokens_list) / len(tokens_list)) if tokens_list else 0
+            
+            dtrs = [p.get("local_dtr", float("nan")) for p in probs if "local_dtr" in p]
+            valid_dtrs = [d for d in dtrs if not math.isnan(d)]
+            mode_data["local_dtr"] = sum(valid_dtrs) / len(valid_dtrs) if valid_dtrs else float("nan")
+            
+            ppls = [p.get("ppl", float("nan")) for p in probs if "ppl" in p]
+            valid_ppls = [ppl for ppl in ppls if not math.isnan(ppl)]
+            mode_data["ppl"] = sum(valid_ppls) / len(valid_ppls) if valid_ppls else float("nan")
+            
+            # Use the first problem's trajectories as representatives
+            if probs:
+                mode_data["ema_trajectory"] = probs[0].get("ema_trajectory", [])
+                mode_data["alpha_trajectory"] = probs[0].get("alpha_trajectory", [])
+                
+            # Recalculate diagnostics
+            active_steps_list = [p.get("alpha_active_steps", 0) for p in probs]
+            total_steps_list = [p.get("num_tokens", 1) for p in probs]
+            max_alpha_list = [p.get("alpha_max_value", 0.0) for p in probs]
+            
+            mode_data["module_diagnostics"] = {
+                "problems_with_intervention": sum(1 for s in active_steps_list if s > 0),
+                "problems_with_convergence": sum(1 for p in probs if p.get("convergence", False)),
+                "mean_alpha_active_ratio": float(np.mean([
+                    (a / max(t, 1)) for a, t in zip(active_steps_list, total_steps_list)
+                ]) if total_steps_list else 0.0),
+                "mean_max_alpha": float(np.mean(max_alpha_list) if max_alpha_list else 0.0),
+            }
+            
+    return data
+
+
+def load_any_results(path: str) -> dict:
+    """Load results from path, transparently handling legacy JSON and new JSONL formats."""
+    if not os.path.exists(path):
+        return {}
+    if path.endswith(".jsonl"):
+        return load_jsonl_results(path)
+    else:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+
+def save_detailed_statistics(data: dict, dest_path: str, vector_dir: str):
+    """Save a clean, readable detailed stats summary containing md5s, configs, and side-by-side predictions."""
+    # Read core hyperparameters from config module
+    import config
+    hparams = {
+        "alpha_max": getattr(config, "ALPHA_MAX", None),
+        "continuous_alpha": getattr(config, "CONTINUOUS_ALPHA", None),
+        "continuous_linear_alpha": getattr(config, "CONTINUOUS_LINEAR_ALPHA", None),
+        "entropy_threshold": getattr(config, "ENTROPY_THRESHOLD", None),
+        "ema_beta": getattr(config, "EMA_BETA", None),
+        "convergence_margin_tau": getattr(config, "CONVERGENCE_MARGIN_TAU", None),
+        "collapse_entropy_min": getattr(config, "COLLAPSE_ENTROPY_MIN", None),
+        "collapse_count_threshold": getattr(config, "COLLAPSE_COUNT_THRESHOLD", None),
+        "perturbation_gamma": getattr(config, "PERTURBATION_GAMMA", None),
+        "perturbation_cooldown_steps": getattr(config, "PERTURBATION_COOLDOWN_STEPS", None)
+    }
+
+    # Vector info & MD5
+    purified_path = os.path.join(vector_dir, "critic.pt")
+    raw_path = os.path.join(vector_dir, "critic_raw.pt")
+    vector_info = {
+        "purified_vector_path": purified_path,
+        "purified_vector_md5": calculate_file_md5(purified_path),
+        "raw_vector_path": raw_path,
+        "raw_vector_md5": calculate_file_md5(raw_path)
+    }
+
+    # Extract accuracies
+    modes_summary = {}
+    for mode_name, mode_data in data.items():
+        modes_summary[mode_name] = {
+            "accuracy": mode_data.get("accuracy", 0.0),
+            "correct_count": mode_data.get("correct_count", 0),
+            "total_count": mode_data.get("total_count", 0)
+        }
+
+    # Side-by-side predictions mapped by problem ID
+    prediction_map = {}
+    for mode_name, mode_data in data.items():
+        for prob in mode_data.get("per_problem", []):
+            prob_id = prob["id"]
+            if prob_id not in prediction_map:
+                prediction_map[prob_id] = {
+                    "problem_id": prob_id,
+                    "ground_truth": prob.get("expected", ""),
+                    "predictions_per_mode": {}
+                }
+            prediction_map[prob_id]["predictions_per_mode"][mode_name] = {
+                "predicted": prob.get("predicted", ""),
+                "correct": prob.get("correct", False)
+            }
+
+    stats_content = {
+        "model_name": getattr(config, "ACTIVE_MODEL", "unknown"),
+        "model_path": getattr(config, "MODEL_PATH", "unknown"),
+        "vector_info": vector_info,
+        "hyperparameters": hparams,
+        "modes_summary": modes_summary,
+        "detailed_predictions": list(prediction_map.values())
+    }
+
+    with open(dest_path, "w", encoding="utf-8") as f:
+        json.dump(stats_content, f, indent=2, ensure_ascii=False)
+
+
 # ======================== Reproducibility ========================
 
 def set_seed(seed: int):
@@ -202,6 +400,7 @@ _DYNAMIC_MODES = frozenset([
     "Dynamic_Spherical_No_Manifold",
     "Dynamic_Spherical_No_ThinkBrake",
     "Dynamic_Spherical_No_EMA",
+    "Dynamic_Spherical_No_AntiCollapse",
     "Dynamic_Linear",
     "True_TAE",
     "TAE_Spherical",
@@ -215,6 +414,7 @@ _HOOK_MODES = frozenset([
     "Dynamic_Spherical_No_Manifold",
     "Dynamic_Spherical_No_ThinkBrake",
     "Dynamic_Spherical_No_EMA",
+    "Dynamic_Spherical_No_AntiCollapse",
     "Dynamic_Linear",
     "True_TAE",
     "TAE_Spherical",
@@ -403,12 +603,14 @@ def _build_global_components(mode: str, term_token_id, device: str, batch_size: 
         monitor_margin_tau = -9999.0 if mode == "Dynamic_Spherical_No_ThinkBrake" else None
         monitor_ema_beta   = 1.0     if mode == "Dynamic_Spherical_No_EMA"         else None
         use_raw_entropy    = mode in ("True_TAE", "TAE_Spherical")
+        disable_anti_collapse = (mode == "Dynamic_Spherical_No_AntiCollapse")
 
         monitor_kwargs = dict(
             state=state,
             pid_controller=pid,
             term_token_id=term_token_id,
             use_raw_entropy=use_raw_entropy,
+            disable_anti_collapse=disable_anti_collapse,
         )
         if monitor_margin_tau is not None:
             monitor_kwargs["margin_tau"] = monitor_margin_tau
@@ -954,7 +1156,7 @@ def run_full_experiment(
                     "input_len": result["input_len"],
                 }
 
-                if mode_name in ("Dynamic_Spherical", "Continuous", "Continuous_Linear"):
+                if mode_name in _TRAJECTORY_MODES:
                     alpha_traj = result["alpha_trajectory"]
                     detail["ema_trajectory"] = result["ema_trajectory"]
                     detail["alpha_trajectory"] = alpha_traj
@@ -986,17 +1188,10 @@ def run_full_experiment(
                     mode_data["ema_trajectory"] = result["ema_trajectory"]
                     mode_data["alpha_trajectory"] = result["alpha_trajectory"]
 
-            # Serialize results
-            serializable_results = {}
-            for m, data in experiment_results.items():
-                serializable_results[m] = {
-                    k: v for k, v in data.items()
-                    if isinstance(v, (int, float, str, list, dict, bool, type(None)))
-                }
-
             if results_path is not None:
-                with open(results_path, "w", encoding="utf-8") as f:
-                    json.dump(serializable_results, f, indent=JSON_INDENT, ensure_ascii=False)
+                save_jsonl_results(experiment_results, results_path)
+                stats_path = os.path.join(os.path.dirname(results_path), "detailed_stats.json")
+                save_detailed_statistics(experiment_results, stats_path, VECTOR_DIR)
             
             results_queue.task_done()
 
@@ -1041,8 +1236,7 @@ def run_full_experiment(
         completed_ids = set()
         if resume_path and os.path.isfile(resume_path):
             try:
-                with open(resume_path, "r", encoding="utf-8") as rf:
-                    existing = json.load(rf)
+                existing = load_any_results(resume_path)
                 existing_mode = existing.get(mode, {})
                 existing_per_problem = existing_mode.get("per_problem", [])
                 if existing_per_problem:
@@ -1166,16 +1360,10 @@ def run_full_experiment(
               f"PPL=N/A | DTR=N/A")
 
         # Give it a final save with updated metrics
-        serializable_results = {}
-        for m, data in experiment_results.items():
-            serializable_results[m] = {
-                k: v for k, v in data.items()
-                if isinstance(v, (int, float, str, list, dict, bool, type(None)))
-            }
-
         if results_path is not None:
-            with open(results_path, "w", encoding="utf-8") as f:
-                json.dump(serializable_results, f, indent=JSON_INDENT, ensure_ascii=False)
+            save_jsonl_results(experiment_results, results_path)
+            stats_path = os.path.join(os.path.dirname(results_path), "detailed_stats.json")
+            save_detailed_statistics(experiment_results, stats_path, VECTOR_DIR)
 
     # Clean up worker thread permanently at the very end
     results_queue.put(None)
@@ -1209,7 +1397,7 @@ def main():
         type=str,
         default=None,
         metavar="PATH",
-        help="Path to an existing experiment_results.json to resume from. "
+        help="Path to an existing experiment_results.jsonl to resume from. "
              "Already-completed problems (matched by 'id') will be skipped.",
     )
     parser.add_argument(
@@ -1288,7 +1476,7 @@ def main():
     timestamp = datetime.now().strftime(RESULTS_TIMESTAMP_FMT)
     results_subdir = os.path.join(RESULTS_DIR, f"{dataset_name}_{timestamp}")
     os.makedirs(results_subdir, exist_ok=True)
-    results_path = os.path.join(results_subdir, "experiment_results.json")
+    results_path = os.path.join(results_subdir, "experiment_results.jsonl")
 
     # ---- Run experiments ----
     modes = args.modes if args.modes else None

@@ -126,6 +126,10 @@ MAX_NEW_TOKENS = 4096*8
 # ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 
+# ======================== Ablation Dataset ========================
+# Path to the new ablation dataset. Users should update this to point to their ablation dataset.
+ABLATION_DATASET_PATH = "./dataset/ablation_dataset.jsonl"
+
 # ======================== Experiment ========================
 # Available modes: 
 #   "Baseline", "Continuous", "Continuous_Linear", "Dynamic_Spherical"
@@ -134,6 +138,7 @@ SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
 #   "Dynamic_Linear"                (w/o SLERP)
 #   "Dynamic_Spherical_No_ThinkBrake" (no latch)
 #   "Dynamic_Spherical_No_EMA"      (instantaneous entropy)
+#   "Dynamic_Spherical_No_AntiCollapse" (w/o anti-collapse manifold perturbation)
 # TAE competitor baselines (EMNLP 2025):
 #   "True_TAE"       — open-loop H_t * k → linear inject with raw vector
 #   "TAE_Spherical"  — open-loop H_t * k → SLERP with PCA vector (control variable)

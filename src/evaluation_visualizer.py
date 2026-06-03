@@ -34,12 +34,64 @@ class PlotVisualizer:
 
     def __init__(self, result: str):
         self.result = result
-        self.json_path = os.path.join(result, "experiment_results.json")
+        self.json_path = os.path.join(result, "experiment_results.jsonl")
         if not os.path.exists(self.json_path):
-            raise FileNotFoundError(f"找不到结果文件: {self.json_path}")
+            legacy_path = os.path.join(result, "experiment_results.json")
+            if os.path.exists(legacy_path):
+                self.json_path = legacy_path
+            else:
+                raise FileNotFoundError(f"找不到结果文件: {self.json_path}")
         
-        with open(self.json_path, "r", encoding="utf-8") as f:
-            self.results = json.load(f)
+        # Load JSONL or JSON
+        if self.json_path.endswith(".jsonl"):
+            self.results = {}
+            problems = []
+            with open(self.json_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        problems.append(json.loads(line))
+            
+            # Reconstruct the dict of modes
+            for p in problems:
+                prob_id = p["id"]
+                expected = p.get("expected", "")
+                for mode_name, mode_prob_data in p.get("modes", {}).items():
+                    if mode_name not in self.results:
+                        self.results[mode_name] = {
+                            "accuracy": 0.0,
+                            "correct_count": 0,
+                            "total_count": 0,
+                            "repetition": 0.0,
+                            "tokens": 0,
+                            "local_dtr": 0.0,
+                            "per_problem": []
+                        }
+                    prob_entry = {"id": prob_id, "expected": expected, **mode_prob_data}
+                    self.results[mode_name]["per_problem"].append(prob_entry)
+            
+            # Compute global summary metrics for each mode
+            for mode_name, mode_data in self.results.items():
+                probs = mode_data["per_problem"]
+                total = len(probs)
+                if total > 0:
+                    corrects = [p.get("correct", False) for p in probs]
+                    correct_count = sum(1 for c in corrects if c)
+                    mode_data["correct_count"] = correct_count
+                    mode_data["total_count"] = total
+                    mode_data["accuracy"] = correct_count / total
+                    
+                    repetitions = [p.get("repetition", 0.0) for p in probs if "repetition" in p]
+                    mode_data["repetition"] = sum(repetitions) / len(repetitions) if repetitions else 0.0
+                    
+                    tokens_list = [p.get("num_tokens", 0) for p in probs if "num_tokens" in p]
+                    mode_data["tokens"] = int(sum(tokens_list) / len(tokens_list)) if tokens_list else 0
+                    
+                    dtrs = [p.get("local_dtr", 0.0) for p in probs if "local_dtr" in p]
+                    valid_dtrs = [d for d in dtrs if d is not None and not np.isnan(d)]
+                    mode_data["local_dtr"] = sum(valid_dtrs) / len(valid_dtrs) if valid_dtrs else 0.0
+        else:
+            with open(self.json_path, "r", encoding="utf-8") as f:
+                self.results = json.load(f)
 
         # 设置论文级别的图表样式
         sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)

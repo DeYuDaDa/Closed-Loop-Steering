@@ -33,7 +33,13 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import config
 from spherical_injector import spherical_rotate, linear_inject
-from run_experiment import load_control_vectors, _DYNAMIC_MODES, _HOOK_MODES
+from run_experiment import (
+    load_control_vectors,
+    _DYNAMIC_MODES,
+    _HOOK_MODES,
+    load_any_results,
+    save_jsonl_results
+)
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +186,7 @@ def calculate_entropy_parallel(
 
 def backfill_json(json_path: str, output_path: str, limit: int | None = None):
     print(f"Loading results from {json_path}...")
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = load_any_results(json_path)
 
     print(f"Loading model from {config.MODEL_PATH}...")
     model_dtype = getattr(torch, config.DEFAULT_DTYPE)
@@ -295,8 +300,11 @@ def backfill_json(json_path: str, output_path: str, limit: int | None = None):
             print(f"  ✅ {group_name}: back-filled {count} problems.")
 
     print(f"\n💾 Saving updated results to {output_path}...")
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=config.JSON_INDENT, ensure_ascii=False)
+    if output_path.endswith(".jsonl"):
+        save_jsonl_results(data, output_path)
+    else:
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=config.JSON_INDENT, ensure_ascii=False)
     print("Done!")
 
 

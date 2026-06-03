@@ -35,6 +35,7 @@
 | `Dynamic_Linear` | 完整方法但使用 **线性叠加**（无 SLERP） | SLERP |
 | `Dynamic_Spherical_No_ThinkBrake` | 完整方法但禁用 **ThinkBrake 收敛锁** | ThinkBrake |
 | `Dynamic_Spherical_No_EMA` | 完整方法但使用 **瞬时熵**（无 EMA 平滑） | EMA |
+| `Dynamic_Spherical_No_AntiCollapse` | 完整方法但禁用 **Anti-Collapse Watchdog & 扰动** | Anti-Collapse |
 
 ---
 
@@ -71,6 +72,10 @@ python run_experiment.py --dataset ./dataset/aime2024_hard50.jsonl \
 # 4. w/o EMA（验证 EMA 平滑稳定性的作用，瞬时熵会引起触发抖动）
 python run_experiment.py --dataset ./dataset/aime2024_hard50.jsonl \
     --modes Dynamic_Spherical Dynamic_Spherical_No_EMA
+
+# 5. w/o Anti-Collapse（验证 Anti-Collapse 在 Repetitive Loop 时帮助恢复的作用）
+python run_experiment.py --dataset ./dataset/aime2024_hard50.jsonl \
+    --modes Dynamic_Spherical Dynamic_Spherical_No_AntiCollapse
 ```
 
 ### 4.3 TAE 竞品对照实验（EMNLP 2025）

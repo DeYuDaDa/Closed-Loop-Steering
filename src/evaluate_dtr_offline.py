@@ -26,7 +26,13 @@ from config import (
     DTR_RHO,
 )
 from dtr_utils import DTRCalculator, calculate_ppl
-from run_experiment import load_control_vectors, _DYNAMIC_MODES, _HOOK_MODES
+from run_experiment import (
+    load_control_vectors,
+    _DYNAMIC_MODES,
+    _HOOK_MODES,
+    load_any_results,
+    save_jsonl_results
+)
 
 # Allow massive segments to prevent DTR fragmentation
 os.environ.setdefault(
@@ -38,13 +44,15 @@ def load_json_results(path: str) -> dict:
     if not os.path.exists(path):
         print(f"❌ Result file not found: {path}")
         sys.exit(1)
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return load_any_results(path)
 
 
 def save_json_results(data: dict, path: str):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    if path.endswith(".jsonl"):
+        save_jsonl_results(data, path)
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def main():

@@ -209,7 +209,7 @@ def create_steering_hook(
             # Fixed-strength norm-scaled linear addition at every step (no SLERP)
             alpha = continuous_linear_alpha
 
-        elif mode in ("Dynamic_Spherical", "Dynamic_Spherical_No_Manifold", "Dynamic_Spherical_No_ThinkBrake", "Dynamic_Spherical_No_EMA", "Dynamic_Linear", "True_TAE", "TAE_Spherical"):
+        elif mode in ("Dynamic_Spherical", "Dynamic_Spherical_No_Manifold", "Dynamic_Spherical_No_ThinkBrake", "Dynamic_Spherical_No_EMA", "Dynamic_Spherical_No_AntiCollapse", "Dynamic_Linear", "True_TAE", "TAE_Spherical"):
             # Read α from controller (PID or TAE) via shared state
             alpha = state.alpha
             if hasattr(state, "active_batch_indices") and state.active_batch_indices is not None:
@@ -219,7 +219,7 @@ def create_steering_hook(
 
         trigger_mask = None
         has_perturb = False
-        if hasattr(state, "trigger_perturbation"):
+        if mode != "Dynamic_Spherical_No_AntiCollapse" and hasattr(state, "trigger_perturbation"):
             trigger_mask = state.trigger_perturbation
             if hasattr(state, "active_batch_indices") and state.active_batch_indices is not None:
                 trigger_mask = trigger_mask[state.active_batch_indices]
