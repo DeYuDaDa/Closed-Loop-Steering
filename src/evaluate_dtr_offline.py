@@ -24,6 +24,7 @@ from config import (
     DEFAULT_DTYPE,
     DTR_G,
     DTR_RHO,
+    ENDOFTEXT_ID,
 )
 from dtr_utils import DTRCalculator, calculate_ppl
 from run_experiment import (
@@ -76,8 +77,6 @@ def main():
         MODEL_PATH, torch_dtype=model_dtype, device_map="auto"
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-    # Ensure pad token differs from eos_token (same fix as run_experiment.py)
-    ENDOFTEXT_ID = 151643
     if tokenizer.pad_token_id is None or tokenizer.pad_token_id == tokenizer.eos_token_id:
         tokenizer.pad_token_id = ENDOFTEXT_ID
         tokenizer.pad_token = tokenizer.convert_ids_to_tokens(ENDOFTEXT_ID)

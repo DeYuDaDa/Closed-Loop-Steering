@@ -95,6 +95,10 @@ def run_isolated_batch_inference(
         term_ids = tokenizer.encode("</think>", add_special_tokens=False)
         if term_ids:
             term_token_id = term_ids[-1]
+        else:
+            term_ids = tokenizer.encode("<channel|>", add_special_tokens=False)
+            if term_ids:
+                term_token_id = term_ids[-1]
     except Exception:
         pass
 
@@ -434,6 +438,10 @@ def run_single_inference(
         term_ids = tokenizer.encode("</think>", add_special_tokens=False)
         if term_ids:
             term_token_id = term_ids[-1]
+        else:
+            term_ids = tokenizer.encode("<channel|>", add_special_tokens=False)
+            if term_ids:
+                term_token_id = term_ids[-1]
     except Exception:
         pass
 

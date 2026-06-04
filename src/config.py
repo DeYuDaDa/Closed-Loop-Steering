@@ -5,8 +5,8 @@ All hyperparameters for the 5-module pipeline are defined here.
 """
 
 # ======================== Model Selection ========================
-# Supported options: "qwen3-8b", "deepseek-1.5b"
-ACTIVE_MODEL = "deepseek-1.5b"  # Change this to switch models
+# Supported options: "qwen3-8b", "deepseek-1.5b", "gemma-4-e2b"
+ACTIVE_MODEL = "gemma-4-e2b"  # Change this to switch models
 
 # Model-specific parameters
 MODEL_CONFIGS = {
@@ -26,6 +26,18 @@ MODEL_CONFIGS = {
         "vector_dir": "./vectors-copy/DeepSeek-R1-Distill-Qwen-1.5B",
         "endoftext_id": 151643,   # DeepSeek R1 Distill Qwen uses the same vocab/tokens
         "enable_thinking": True,
+    },
+    "gemma-4-e2b": {
+        "paths": [
+            "/root/autodl-tmp/gemma-4-E2B-it",
+            "/root/autodl-tmp/gemma-4-E2B",
+            "/root/autodl-tmp/google/gemma-4-E2B-it",
+            "/root/autodl-tmp/google/gemma-4-E2B"
+        ],
+        "layer_id": 23,           # Layer index for 35-layer model (2/3 position: 35 * 2/3 ≈ 23)
+        "vector_dir": "./vectors-copy/gemma-4-E2B-it",
+        "endoftext_id": 0,        # Pad token ID for Gemma models
+        "enable_thinking": True,
     }
 }
 
@@ -36,7 +48,7 @@ if ACTIVE_MODEL not in MODEL_CONFIGS:
 _cfg = MODEL_CONFIGS[ACTIVE_MODEL]
 
 # Resolve model path
-if ACTIVE_MODEL == "deepseek-1.5b":
+if "paths" in _cfg:
     import os
     MODEL_PATH = _cfg["paths"][0]
     for p in _cfg["paths"]:
