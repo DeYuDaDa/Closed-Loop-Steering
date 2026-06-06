@@ -157,7 +157,8 @@ def calculate_entropy_parallel(
                 return (hidden_new,) + output[1:]
             return hidden_new
 
-        layer = model.model.layers[config.LAYER_ID]
+        base_model = model.model
+        layer = base_model.language_model.layers[config.LAYER_ID] if hasattr(base_model, "language_model") else base_model.layers[config.LAYER_ID]
         handles.append(layer.register_forward_hook(parallel_hook))
 
     try:

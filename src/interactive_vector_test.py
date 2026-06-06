@@ -107,7 +107,8 @@ def setup_hook(model, control_vector, alpha: float):
         continuous_linear_alpha=0.0,
         capture_hidden_states=False,
     )
-    layer = model.model.layers[LAYER_ID]
+    base_model = model.model
+    layer = base_model.language_model.layers[LAYER_ID] if hasattr(base_model, "language_model") else base_model.layers[LAYER_ID]
     hook_handle = layer.register_forward_hook(hook_fn)
     print(f"🔗  Hook mounted → layer {LAYER_ID}, alpha={alpha}")
     return hook_handle, state

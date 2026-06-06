@@ -284,7 +284,8 @@ class VectorOptimizer:
         return hook_fn
 
     def register_hook(self):
-        layer = self.model.model.layers[self.target_layer]
+        base_model = self.model.model
+        layer = base_model.language_model.layers[self.target_layer] if hasattr(base_model, "language_model") else base_model.layers[self.target_layer]
         self._hook_handle = layer.register_forward_hook(self._make_hook())
 
     def remove_hook(self):

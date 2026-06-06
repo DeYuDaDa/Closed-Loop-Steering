@@ -154,7 +154,8 @@ class DTRCalculator:
                     return (hidden,) + output[1:]
                 return hidden
                 
-            layer = self.model.model.layers[layer_id]
+            base_model = self.model.model
+            layer = base_model.language_model.layers[layer_id] if hasattr(base_model, "language_model") else base_model.layers[layer_id]
             hook_handle = layer.register_forward_hook(replay_hook)
 
         try:

@@ -238,7 +238,8 @@ def run_isolated_batch_inference(
         # Construct and attach Batched Replay Hook for massive prefill
         replay_hook_handle = None
         hook_handle = None
-        layer = model.model.layers[LAYER_ID]
+        base_model = model.model
+        layer = base_model.language_model.layers[LAYER_ID] if hasattr(base_model, "language_model") else base_model.layers[LAYER_ID]
         
         if control_vector is not None and mode in run_experiment._HOOK_MODES:
             alpha_trajs = [t.task_state["alpha_trajectory"] for t in batch_tasks]
@@ -467,7 +468,8 @@ def run_single_inference(
                 continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
                 capture_hidden_states=False,
             )
-            layer = model.model.layers[LAYER_ID]
+            base_model = model.model
+            layer = base_model.language_model.layers[LAYER_ID] if hasattr(base_model, "language_model") else base_model.layers[LAYER_ID]
             hook_handle = layer.register_forward_hook(hook_fn)
 
         try:

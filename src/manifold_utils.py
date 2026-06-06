@@ -120,7 +120,8 @@ def collect_activations_from_model(
         all_activations.append(hidden.detach().cpu().float())
         return output
 
-    layer = model.model.layers[layer_id]
+    base_model = model.model
+    layer = base_model.language_model.layers[layer_id] if hasattr(base_model, "language_model") else base_model.layers[layer_id]
     handle = layer.register_forward_hook(collect_hook)
 
     with torch.no_grad():

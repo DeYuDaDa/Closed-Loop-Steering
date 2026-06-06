@@ -829,7 +829,8 @@ def run_continuous_batching_generation(
             continuous_linear_alpha=CONTINUOUS_LINEAR_ALPHA,
             capture_hidden_states=False,
         )
-        layer = model.model.layers[LAYER_ID]
+        base_model = model.model
+        layer = base_model.language_model.layers[LAYER_ID] if hasattr(base_model, "language_model") else base_model.layers[LAYER_ID]
         hook_handle = layer.register_forward_hook(hook_fn)
 
     # ---- Slot pool: fixed-size list, None = empty ----

@@ -72,7 +72,8 @@ def collect_last_token_activation(
         activation_store["last"] = hidden[:, -1, :].detach().cpu().float()
         return output
 
-    layer = model.model.layers[layer_id]
+    base_model = model.model
+    layer = base_model.language_model.layers[layer_id] if hasattr(base_model, "language_model") else base_model.layers[layer_id]
     handle = layer.register_forward_hook(hook_fn)
 
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)

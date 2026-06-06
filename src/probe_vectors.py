@@ -82,7 +82,9 @@ def decode_hidden_state(
 
     with torch.no_grad():
         # Apply the final layer norm that sits between transformer layers and lm_head
-        norm_out = model.model.norm(h_3d)          # [1, 1, hidden_dim]
+        base_model = model.model
+        norm_layer = base_model.language_model.norm if hasattr(base_model, "language_model") else base_model.norm
+        norm_out = norm_layer(h_3d)          # [1, 1, hidden_dim]
         logits   = model.lm_head(norm_out)         # [1, 1, vocab_size]
         logits   = logits[:, 0, :]                 # [1, vocab_size]
 
