@@ -106,6 +106,8 @@ def clean_cruxeval_prediction(pred: str, mode: str) -> str:
     """
     Clean up prediction text by removing markdown code blocks, assert prefix/suffix, etc.
     """
+    if pred is None:
+        return ""
     pred = pred.strip()
     # Remove markdown code block formatting
     if pred.startswith("```"):
@@ -117,6 +119,58 @@ def clean_cruxeval_prediction(pred: str, mode: str) -> str:
             elif pred.startswith("py"):
                 pred = pred[2:]
     pred = pred.strip()
+
+    # Recursively strip prefixes/suffixes
+    changed = True
+    while changed:
+        changed = False
+        pred_lower = pred.lower()
+        
+        # Suffixes to strip
+        for suffix in [".", ":", "`", "*"]:
+            if pred.endswith(suffix):
+                pred = pred[:-len(suffix)].strip()
+                changed = True
+                pred_lower = pred.lower()
+                
+        # Prefixes to strip
+        prefixes = [
+            "the final output is the string",
+            "the final output is string",
+            "the final output is a dictionary",
+            "the final output is dictionary",
+            "the final output is a list",
+            "the final output is list",
+            "the final output is a tuple",
+            "the final output is tuple",
+            "the final output is",
+            "the output is",
+            "the answer is",
+            "final output:",
+            "final output",
+            "output:",
+            "output",
+            "answer is",
+            "**answer:**",
+            "**answer**",
+            "answer:",
+            "answer",
+            "boxed:",
+            "boxed",
+            "so, the answer is",
+            "so the answer is",
+            "so,"
+        ]
+        for prefix in prefixes:
+            if pred_lower.startswith(prefix):
+                pred = pred[len(prefix):].strip()
+                changed = True
+                pred_lower = pred.lower()
+                break # break to restart loop with new length
+
+    # Strip outer quotes if any
+    if (pred.startswith("'") and pred.endswith("'")) or (pred.startswith('"') and pred.endswith('"')):
+        pred = pred[1:-1].strip()
 
     # If the output is a full assertion, extract the right side
     # e.g., "assert f(x) == y"
@@ -139,6 +193,30 @@ def clean_cruxeval_prediction(pred: str, mode: str) -> str:
                 else:
                     pred = inner.strip()
     
+    # Strip again after split/clean
+    changed = True
+    while changed:
+        changed = False
+        pred_lower = pred.lower()
+        for suffix in [".", ":", "`", "*"]:
+            if pred.endswith(suffix):
+                pred = pred[:-len(suffix)].strip()
+                changed = True
+                pred_lower = pred.lower()
+        for prefix in prefixes:
+            if pred_lower.startswith(prefix):
+                pred = pred[len(prefix):].strip()
+                changed = True
+                pred_lower = pred.lower()
+                break
+
+    # Strip outer quotes again
+    if (pred.startswith("'") and pred.endswith("'")) or (pred.startswith('"') and pred.endswith('"')):
+        pred = pred[1:-1].strip()
+
+    # Clean LaTeX escapes like \{ and \} and \" and \'
+    pred = pred.replace("\\{", "{").replace("\\}", "}").replace("\\'", "'").replace('\\"', '"')
+
     # Strip any ending comments like "# done"
     if "#" in pred:
         pred = pred.split("#")[0].strip()
@@ -153,7 +231,7 @@ def extract_answer_cruxeval(text: str) -> Optional[str]:
       1. Final \\boxed{} after </think>
       2. Any \\boxed{} in the text
       3. Tag [ANSWER]...[/ANSWER] or <answer>...</answer>
-      4. Fallback to last line of thinking-ending text
+      4. Fallback to last line of thinking-ending text (ignoring markdown blocks)
     """
     if not text:
         return None
@@ -161,13 +239,10 @@ def extract_answer_cruxeval(text: str) -> Optional[str]:
     # Check after </think> tag
     THINK_END = "</think>"
     idx = text.rfind(THINK_END)
-    if idx != -1:
-        search_text = text[idx + len(THINK_END):]
-    else:
-        search_text = text
+    search_text = text[idx + len(THINK_END):] if idx != -1 else text
 
-    # Strategy 1: \\boxed{...} (match the LAST occurrence)
-    boxed_positions = [m.end() for m in re.finditer(r"\\boxed\s*\{", search_text)]
+    # Strategy 1: \\boxed{...} (match the LAST occurrence, allow optional backslash)
+    boxed_positions = [m.end() for m in re.finditer(r"\\?boxed\s*\{", search_text)]
     if boxed_positions:
         content = _extract_balanced_braces(search_text, boxed_positions[-1])
         if content is not None:
@@ -175,7 +250,7 @@ def extract_answer_cruxeval(text: str) -> Optional[str]:
 
     # Fallback checking full text for boxed
     if idx != -1:
-        boxed_positions = [m.end() for m in re.finditer(r"\\boxed\s*\{", text)]
+        boxed_positions = [m.end() for m in re.finditer(r"\\?boxed\s*\{", text)]
         if boxed_positions:
             content = _extract_balanced_braces(text, boxed_positions[-1])
             if content is not None:
@@ -190,10 +265,73 @@ def extract_answer_cruxeval(text: str) -> Optional[str]:
                 if start_tag in sub_part:
                     return sub_part.split(start_tag)[-1].strip()
 
-    # Strategy 3: Fallback to last non-empty line
-    lines = [line.strip() for line in search_text.split("\n") if line.strip()]
-    if lines:
-        return lines[-1]
+    # Strategy 3: Fallback to last non-empty line (skipping markdown code blocks)
+    lines = [line.strip() for line in search_text.split("\n")]
+    filtered_lines = []
+    for line in lines:
+        l_stripped = line.strip()
+        if not l_stripped:
+            continue
+        if l_stripped.startswith("```"):
+            continue
+        filtered_lines.append(l_stripped)
+
+    if filtered_lines:
+        last_line = filtered_lines[-1]
+
+        # Handle comment on the last line
+        if "#" in last_line:
+            code_part, comment_part = last_line.split("#", 1)
+            code_part = code_part.strip()
+            comment_part = comment_part.strip()
+            
+            comment_lower = comment_part.lower()
+            comment_val = None
+            for indicator in ["output:", "output is", "returns", "->", "=="]:
+                if indicator in comment_lower:
+                    idx_ind = comment_lower.find(indicator)
+                    comment_val = comment_part[idx_ind + len(indicator):].strip()
+                    break
+            
+            if comment_val:
+                last_line = comment_val
+            else:
+                try:
+                    ast.literal_eval(comment_part)
+                    last_line = comment_part
+                except Exception:
+                    last_line = code_part
+
+        prefixes_to_strip = [
+            "the final output is the string",
+            "the final output is string",
+            "the final output is a dictionary",
+            "the final output is dictionary",
+            "the final output is a list",
+            "the final output is list",
+            "the final output is a tuple",
+            "the final output is tuple",
+            "the final output is",
+            "the output is",
+            "the answer is",
+            "final output:",
+            "final output",
+            "output:",
+            "output",
+            "answer is",
+            "**answer:**",
+            "**answer**",
+            "answer:",
+            "answer",
+            "boxed:",
+            "boxed"
+        ]
+        last_line_lower = last_line.lower()
+        for prefix in prefixes_to_strip:
+            if last_line_lower.startswith(prefix):
+                last_line = last_line[len(prefix):].strip()
+                last_line_lower = last_line.lower()
+        return last_line
 
     return None
 
@@ -204,7 +342,7 @@ def check_answer_cruxeval_output(code: str, input_val: str, gold_output: str, pr
     """
     Verify correctness of output prediction by local execution of assertion.
     """
-    if not predicted:
+    if predicted is None:
         return False
 
     pred_cleaned = clean_cruxeval_prediction(predicted, "output")
@@ -221,7 +359,20 @@ def check_answer_cruxeval_output(code: str, input_val: str, gold_output: str, pr
     except Exception:
         pass
 
-    # Try 2: If gold_output was a string and model output missing quotes, try quoting it
+    # Try 2: Semantic literal comparison (eval function locally, compare python values)
+    try:
+        exec_globals = {}
+        exec(code, exec_globals)
+        func = exec_globals['f']
+        gold_input_args = ast.literal_eval(f"({input_val},)")
+        gold_output_obj = func(*gold_input_args)
+        pred_obj = ast.literal_eval(pred_cleaned)
+        if gold_output_obj == pred_obj:
+            return True
+    except Exception:
+        pass
+
+    # Try 3: If gold_output was a string and model output missing quotes, try quoting it
     try:
         gold_obj = ast.literal_eval(gold_output)
         if isinstance(gold_obj, str):
@@ -240,7 +391,7 @@ def check_answer_cruxeval_input(code: str, gold_output: str, predicted: Optional
     """
     Verify correctness of input prediction by local execution of assertion f(pred_cleaned) == gold_output.
     """
-    if not predicted:
+    if predicted is None:
         return False
 
     pred_cleaned = clean_cruxeval_prediction(predicted, "input")
@@ -257,7 +408,20 @@ def check_answer_cruxeval_input(code: str, gold_output: str, predicted: Optional
     except Exception:
         pass
 
-    # Try 2: Try quoting prediction if it fails (e.g. missing quotes for a string arg)
+    # Try 2: Semantic run prediction on f() and compare output
+    try:
+        exec_globals = {}
+        exec(code, exec_globals)
+        func = exec_globals['f']
+        gold_output_obj = ast.literal_eval(gold_output)
+        pred_args = ast.literal_eval(f"({pred_cleaned},)")
+        res = func(*pred_args)
+        if res == gold_output_obj:
+            return True
+    except Exception:
+        pass
+
+    # Try 3: Try quoting prediction if it fails (e.g. missing quotes for a string arg)
     try:
         escaped_pred = repr(pred_cleaned)
         code_to_run_2 = f"{code}\nassert f({escaped_pred}) == {gold_output}"

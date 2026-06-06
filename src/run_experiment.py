@@ -297,10 +297,21 @@ def save_detailed_statistics(data: dict, dest_path: str, vector_dir: str):
     # Extract accuracies
     modes_summary = {}
     for mode_name, mode_data in data.items():
+        probs = mode_data.get("per_problem", [])
+        processed_count = len(probs)
+        corrects = [p.get("correct", False) for p in probs]
+        correct_count = sum(1 for c in corrects if c)
+        total_count = mode_data.get("total_count", 0)
+        
+        accuracy = mode_data.get("accuracy", 0.0)
+        if processed_count > 0:
+            accuracy = correct_count / processed_count
+
         modes_summary[mode_name] = {
-            "accuracy": mode_data.get("accuracy", 0.0),
-            "correct_count": mode_data.get("correct_count", 0),
-            "total_count": mode_data.get("total_count", 0)
+            "accuracy": accuracy,
+            "correct_count": correct_count,
+            "processed_count": processed_count,
+            "total_count": total_count if total_count > 0 else processed_count
         }
 
     # Side-by-side predictions mapped by problem ID
@@ -1122,8 +1133,15 @@ def run_full_experiment(
         modes = EXPERIMENT_MODES
     if control_vectors is None:
         control_vectors = {}
-
-    experiment_results = {}
+    if resume_path and os.path.isfile(resume_path):
+        try:
+            experiment_results = load_any_results(resume_path)
+            print(f"  ↩️ Loaded existing results from {resume_path} containing modes: {list(experiment_results.keys())}")
+        except Exception as e:
+            print(f"  ⚠️ Could not load resume file: {e}. Starting fresh.")
+            experiment_results = {}
+    else:
+        experiment_results = {}
     results_queue = queue.Queue()
 
     # Async worker to perform answer extraction, evaluate and save to JSON
@@ -1252,19 +1270,25 @@ def run_full_experiment(
         else:
             prompts = collate_prompts_aime(dataset)
 
-        mode_data = {
-            "accuracy": 0.0,
-            "correct_count": 0,
-            "total_count": len(dataset),
-            "repetition": 0.0,
-            "ppl": float("nan"),
-            "tokens": 0,
-            "local_dtr": float("nan"),
-            "ema_trajectory": [],
-            "alpha_trajectory": [],
-            "per_problem": [],
-        }
-        experiment_results[mode] = mode_data
+        if mode not in experiment_results:
+            mode_data = {
+                "accuracy": 0.0,
+                "correct_count": 0,
+                "total_count": len(dataset),
+                "repetition": 0.0,
+                "ppl": float("nan"),
+                "tokens": 0,
+                "local_dtr": float("nan"),
+                "ema_trajectory": [],
+                "alpha_trajectory": [],
+                "per_problem": [],
+            }
+            experiment_results[mode] = mode_data
+        else:
+            mode_data = experiment_results[mode]
+            if "per_problem" not in mode_data:
+                mode_data["per_problem"] = []
+            mode_data["total_count"] = len(dataset)
         
         mode_stats = {
             "mode_correct": 0,
@@ -1275,23 +1299,17 @@ def run_full_experiment(
         # ---- Resume logic: skip already-completed problems ----
         completed_ids = set()
         if resume_path and os.path.isfile(resume_path):
-            try:
-                existing = load_any_results(resume_path)
-                existing_mode = existing.get(mode, {})
-                existing_per_problem = existing_mode.get("per_problem", [])
-                if existing_per_problem:
-                    # Pre-populate mode_data and mode_stats with completed results
-                    mode_data["per_problem"] = existing_per_problem
-                    for d in existing_per_problem:
-                        completed_ids.add(str(d["id"]))
-                        if d.get("correct", False):
-                            mode_stats["mode_correct"] += 1
-                        mode_stats["mode_tokens_total"] += d.get("num_tokens", 0)
-                        mode_stats["mode_repetitions"].append(d.get("repetition", 0.0))
-                    print(f"  ↩️  [{mode}] Resuming: {len(completed_ids)} problems already done, "
-                          f"{len(dataset) - len(completed_ids)} remaining.")
-            except Exception as e:
-                print(f"  ⚠️  Could not load resume file: {e}. Starting fresh.")
+            existing_per_problem = mode_data.get("per_problem", [])
+            if existing_per_problem:
+                # Pre-populate mode_data and mode_stats with completed results
+                for d in existing_per_problem:
+                    completed_ids.add(str(d["id"]))
+                    if d.get("correct", False):
+                        mode_stats["mode_correct"] += 1
+                    mode_stats["mode_tokens_total"] += d.get("num_tokens", 0)
+                    mode_stats["mode_repetitions"].append(d.get("repetition", 0.0))
+                print(f"  ↩️  [{mode}] Resuming: {len(completed_ids)} problems already done, "
+                      f"{len(dataset) - len(completed_ids)} remaining.")
 
         # Filter dataset and prompts to only unfinished problems
         if completed_ids:
