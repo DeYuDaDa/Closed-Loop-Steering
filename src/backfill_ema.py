@@ -194,6 +194,7 @@ def backfill_json(json_path: str, output_path: str, limit: int | None = None):
         config.MODEL_PATH,
         torch_dtype=model_dtype,
         device_map=config.DEVICE_MAP,
+        attn_implementation=config.ATTN_IMPLEMENTATION,
     )
 
     print("\n🔬 Loading control vectors...")

@@ -16,6 +16,7 @@ MODEL_CONFIGS = {
         "vector_dir": "./vectors-copy/qwen3-8b",
         "endoftext_id": 151643,
         "enable_thinking": True,
+        "attn_implementation": "flash_attention_2",
     },
     "deepseek-1.5b": {
         "paths": [
@@ -26,6 +27,7 @@ MODEL_CONFIGS = {
         "vector_dir": "./vectors-copy/DeepSeek-R1-Distill-Qwen-1.5B",
         "endoftext_id": 151643,   # DeepSeek R1 Distill Qwen uses the same vocab/tokens
         "enable_thinking": True,
+        "attn_implementation": "flash_attention_2",
     },
     "gemma-4-e2b": {
         "paths": [
@@ -38,6 +40,7 @@ MODEL_CONFIGS = {
         "vector_dir": "./vectors-copy/gemma-4-E2B-it",
         "endoftext_id": 0,        # Pad token ID for Gemma models
         "enable_thinking": True,
+        "attn_implementation": "sdpa", # Avoid FlashAttention head_dim limit (> 256)
     }
 }
 
@@ -62,6 +65,7 @@ LAYER_ID = _cfg["layer_id"]
 VECTOR_DIR = _cfg["vector_dir"]
 ENDOFTEXT_ID = _cfg["endoftext_id"]
 ENABLE_THINKING = _cfg["enable_thinking"]
+ATTN_IMPLEMENTATION = _cfg.get("attn_implementation", "flash_attention_2")
 
 DEFAULT_DTYPE = "bfloat16"    # Options: "float16", "bfloat16", "float32"
 DEVICE_MAP = "auto"           # Options: "auto", "cuda:0", "cpu"

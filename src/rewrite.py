@@ -315,7 +315,7 @@ def main():
     try:
         from config import (
             DATASET_DIR, DEFAULT_DTYPE, MODEL_PATH, DEVICE_MAP, ENDOFTEXT_ID,
-            VECTOR_DIR, RESULTS_TIMESTAMP_FMT, RESULTS_DIR, BATCH_SIZE
+            VECTOR_DIR, RESULTS_TIMESTAMP_FMT, RESULTS_DIR, BATCH_SIZE, ATTN_IMPLEMENTATION
         )
     except ImportError:
         pass
@@ -361,6 +361,7 @@ def main():
         MODEL_PATH,
         torch_dtype=model_dtype,
         device_map=DEVICE_MAP,
+        attn_implementation=ATTN_IMPLEMENTATION,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 

@@ -25,6 +25,7 @@ from config import (
     DTR_G,
     DTR_RHO,
     ENDOFTEXT_ID,
+    ATTN_IMPLEMENTATION,
 )
 from dtr_utils import DTRCalculator, calculate_ppl
 from run_experiment import (
@@ -74,7 +75,8 @@ def main():
     model_dtype = getattr(torch, DEFAULT_DTYPE)
     print(f"🔧 Loading model from {MODEL_PATH} ({DEFAULT_DTYPE})...")
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH, torch_dtype=model_dtype, device_map="auto"
+        MODEL_PATH, torch_dtype=model_dtype, device_map="auto",
+        attn_implementation=ATTN_IMPLEMENTATION
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     if tokenizer.pad_token_id is None or tokenizer.pad_token_id == tokenizer.eos_token_id:

@@ -39,6 +39,7 @@ from config import (
     ENABLE_THINKING,
     SAFE_SCORE_RANGE,
     ENDOFTEXT_ID,
+    ATTN_IMPLEMENTATION,
 )
 from run_experiment import (
     load_control_vectors,
@@ -67,6 +68,7 @@ def load_model():
         MODEL_PATH,
         torch_dtype=model_dtype,
         device_map=DEVICE_MAP,
+        attn_implementation=ATTN_IMPLEMENTATION,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 

@@ -86,6 +86,7 @@ from config import (
     JSON_INDENT,
     ENABLE_THINKING,
     GLOBAL_SEED,
+    ATTN_IMPLEMENTATION,
 )
 from state_monitor import InjectionState, StateMonitor
 from pid_controller import PIDController
@@ -1522,7 +1523,7 @@ def main():
         MODEL_PATH,
         torch_dtype=model_dtype,
         device_map=DEVICE_MAP,
-        attn_implementation="flash_attention_2",
+        attn_implementation=ATTN_IMPLEMENTATION,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 

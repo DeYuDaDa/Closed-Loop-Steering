@@ -35,7 +35,7 @@ from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # ── local imports (no modification of existing modules) ────────────────────────
-from config import MODEL_PATH, LAYER_ID, VECTOR_DIR
+from config import MODEL_PATH, LAYER_ID, VECTOR_DIR, ATTN_IMPLEMENTATION
 LAYER_ID = 16
 from spherical_injector import spherical_rotate
 # ── constants ──────────────────────────────────────────────────────────────────
@@ -152,6 +152,7 @@ def main():
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        attn_implementation=ATTN_IMPLEMENTATION,
     )
     model.eval()
     print(f"  Model loaded on device: {next(model.parameters()).device}")

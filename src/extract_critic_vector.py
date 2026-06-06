@@ -27,7 +27,7 @@ import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from config import MODEL_PATH, LAYER_ID, VECTOR_DIR, PCA_N_COMPONENTS, GLOBAL_SEED
+from config import MODEL_PATH, LAYER_ID, VECTOR_DIR, PCA_N_COMPONENTS, GLOBAL_SEED, ATTN_IMPLEMENTATION
 from manifold_utils import ManifoldProjector
 
 
@@ -169,6 +169,7 @@ def main():
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        attn_implementation=ATTN_IMPLEMENTATION,
     )
     model.eval()
     print(f"  Model loaded. Device: {model.device}")

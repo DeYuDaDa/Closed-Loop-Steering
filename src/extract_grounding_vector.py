@@ -44,7 +44,7 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # ── local imports (不修改这些模块) ────────────────────────────────────────────
-from config import MODEL_PATH, LAYER_ID, VECTOR_DIR
+from config import MODEL_PATH, LAYER_ID, VECTOR_DIR, ATTN_IMPLEMENTATION
 from loaders.aime_loader import build_aime_prompt
 
 
@@ -460,6 +460,7 @@ def main():
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        attn_implementation=ATTN_IMPLEMENTATION,
     )
     model.eval()
     device = next(model.parameters()).device
