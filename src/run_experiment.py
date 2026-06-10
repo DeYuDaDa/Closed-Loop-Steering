@@ -914,7 +914,7 @@ def run_continuous_batching_generation(
             state.active_mask.fill_(False)
             state.active_mask[slot_idx] = True
             # Build full-width dummy buffers (monitor indexes via active_mask)
-            vocab_size = model.config.vocab_size
+            vocab_size = getattr(model.config, "vocab_size", None) or model.get_output_embeddings().out_features
             dummy_logits = torch.zeros(
                 (max_concurrent_seqs, vocab_size), dtype=torch.float32, device=device
             )
@@ -967,7 +967,7 @@ def run_continuous_batching_generation(
 
         # Pre-allocate monitor buffers (over-provisioned, never reallocated in hot-path).
         if monitor is not None:
-            vocab_size = model.config.vocab_size
+            vocab_size = getattr(model.config, "vocab_size", None) or model.get_output_embeddings().out_features
             dummy_logits_buf = torch.zeros(
                 (max_concurrent_seqs, vocab_size), dtype=torch.float32, device=device
             )
