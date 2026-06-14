@@ -1209,6 +1209,23 @@ def run_full_experiment(
         modes = EXPERIMENT_MODES
     if control_vectors is None:
         control_vectors = {}
+    
+    eos_id = tokenizer.eos_token_id
+    if isinstance(eos_id, list):
+        eos_id = eos_id[0]
+
+    term_token_id = None
+    try:
+        term_ids = tokenizer.encode("</think>", add_special_tokens=False)
+        if term_ids:
+            term_token_id = term_ids[-1]
+        else:
+            term_ids = tokenizer.encode("<channel|>", add_special_tokens=False)
+            if term_ids:
+                term_token_id = term_ids[-1]
+    except Exception:
+        pass
+
     if resume_path and os.path.isfile(resume_path):
         try:
             experiment_results = load_any_results(resume_path)
