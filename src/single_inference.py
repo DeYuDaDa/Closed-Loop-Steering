@@ -2,6 +2,8 @@ import torch
 import gc
 from config import (
     AIME_MAX_TOKENS,
+    MAX_THINKING_BUDGET,
+    MAX_TOTAL_TOKENS,
     DO_SAMPLE,
     TEMPERATURE,
     TOP_P,
@@ -110,39 +112,68 @@ def run_isolated_batch_inference(
     
     # 1. Initialization: Create all SuspendedTasks initially
     for prompt_idx, p in enumerate(prompts):
-        try:
-            text = tokenizer.apply_chat_template(
-                p, tokenize=False, add_generation_prompt=True,
-                enable_thinking=ENABLE_THINKING,
-            )
-        except TypeError:
-            text = tokenizer.apply_chat_template(
-                p, tokenize=False, add_generation_prompt=True,
-            )
+        if isinstance(p, dict) and "resume_ids" in p:
+            resume_ids = p["resume_ids"]
+            input_len = p["input_len"]
             
-        # Keep on CPU — only pull to GPU when actively batched
-        enc = tokenizer(text, return_tensors="pt")
-        input_len = enc.input_ids.shape[1]
-        
-        task = SuspendedTask(
-            prompt_idx=prompt_idx,
-            prompt_len=input_len,
-            input_ids=enc.input_ids,
-            task_state={
-                "alpha_trajectory": [],
-                "ema_trajectory": [],
-                "entropy_trajectory": [],
-                "intervention_start_step": None,
-                "intervention_end_step": None,
-                "margin": float("inf"),
-                "is_converged": False,
-                "intervention_active": False,
-                "step_count": 0,
-                "prev_error": 0.0,
-                "integral": 0.0,
-            }
-        )
-        active_queue.append(task)
+            if not isinstance(resume_ids, torch.Tensor):
+                resume_ids = torch.tensor(resume_ids, dtype=torch.long)
+            if resume_ids.ndim == 1:
+                resume_ids = resume_ids.unsqueeze(0)
+                
+            task = SuspendedTask(
+                prompt_idx=prompt_idx,
+                prompt_len=input_len,
+                input_ids=resume_ids,
+                task_state={
+                    "alpha_trajectory": p.get("alpha_trajectory", []).copy(),
+                    "ema_trajectory": p.get("ema_trajectory", []).copy(),
+                    "entropy_trajectory": p.get("entropy_trajectory", []).copy(),
+                    "intervention_start_step": p.get("intervention_start", None),
+                    "intervention_end_step": p.get("intervention_end", None),
+                    "margin": 0.0,
+                    "is_converged": True,
+                    "intervention_active": False,
+                    "step_count": len(p.get("alpha_trajectory", [])),
+                    "prev_error": 0.0,
+                    "integral": 0.0,
+                }
+            )
+            active_queue.append(task)
+        else:
+            try:
+                text = tokenizer.apply_chat_template(
+                    p, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=ENABLE_THINKING,
+                )
+            except TypeError:
+                text = tokenizer.apply_chat_template(
+                    p, tokenize=False, add_generation_prompt=True,
+                )
+                
+            # Keep on CPU — only pull to GPU when actively batched
+            enc = tokenizer(text, return_tensors="pt")
+            input_len = enc.input_ids.shape[1]
+            
+            task = SuspendedTask(
+                prompt_idx=prompt_idx,
+                prompt_len=input_len,
+                input_ids=enc.input_ids,
+                task_state={
+                    "alpha_trajectory": [],
+                    "ema_trajectory": [],
+                    "entropy_trajectory": [],
+                    "intervention_start_step": None,
+                    "intervention_end_step": None,
+                    "margin": float("inf"),
+                    "is_converged": False,
+                    "intervention_active": False,
+                    "step_count": 0,
+                    "prev_error": 0.0,
+                    "integral": 0.0,
+                }
+            )
+            active_queue.append(task)
 
     chunk_decode_steps = 2048
 
@@ -303,6 +334,20 @@ def run_isolated_batch_inference(
                 monitor(monitor_ids, logits_1)
                 
             next_tok = run_experiment._sample_batch_tokens(logits_1, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)
+            for list_i, t in enumerate(batch_tasks):
+                if not done_mask[list_i]:
+                    real_tokens = input_ids[list_i, attention_mask[list_i].bool()]
+                    generated_len = len(real_tokens) - t.prompt_len
+                    if generated_len >= MAX_THINKING_BUDGET:
+                        generated_tokens = real_tokens[t.prompt_len:]
+                        if term_token_id is not None and term_token_id not in generated_tokens.tolist():
+                            next_tok[list_i, 0] = term_token_id
+                            if state is not None:
+                                state.is_converged[list_i] = True
+                    if generated_len >= MAX_TOTAL_TOKENS:
+                        done_mask[list_i] = True
+                        next_tok[list_i, 0] = eos_id
+
             next_tok = torch.where(done_mask.unsqueeze(1), torch.full_like(next_tok, eos_id), next_tok)
             done_mask |= (next_tok.squeeze(1) == eos_id)
 
@@ -313,7 +358,7 @@ def run_isolated_batch_inference(
             n_generated += 1
             
             # --- 5. Forward Autoregressive Decoding Loop ---
-            while not done_mask.all() and n_generated < chunk_decode_steps and input_ids.shape[1] < AIME_MAX_TOKENS:
+            while not done_mask.all() and n_generated < chunk_decode_steps:
                 with torch.no_grad():
                     out = model(
                         input_ids=input_ids[:, -1:],
@@ -341,6 +386,22 @@ def run_isolated_batch_inference(
                     monitor(monitor_ids, logits_1)
                 
                 next_tok = run_experiment._sample_batch_tokens(logits_1, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)
+                
+                # Check limits and force think-end for each task
+                for list_i, t in enumerate(batch_tasks):
+                    if not done_mask[list_i]:
+                        real_tokens = input_ids[list_i, attention_mask[list_i].bool()]
+                        generated_len = len(real_tokens) - t.prompt_len
+                        if generated_len >= MAX_THINKING_BUDGET:
+                            generated_tokens = real_tokens[t.prompt_len:]
+                            if term_token_id is not None and term_token_id not in generated_tokens.tolist():
+                                next_tok[list_i, 0] = term_token_id
+                                if state is not None:
+                                    state.is_converged[list_i] = True
+                        if generated_len >= MAX_TOTAL_TOKENS:
+                            done_mask[list_i] = True
+                            next_tok[list_i, 0] = eos_id
+
                 next_tok = torch.where(done_mask.unsqueeze(1), torch.full_like(next_tok, eos_id), next_tok)
                 done_mask |= (next_tok.squeeze(1) == eos_id)
 
@@ -364,7 +425,7 @@ def run_isolated_batch_inference(
             pure_input_ids = input_ids[i, mask_i].unsqueeze(0)
             
             is_eos_reached = done_mask[i].item()
-            is_absolute_limit = pure_input_ids.shape[1] >= AIME_MAX_TOKENS
+            is_absolute_limit = (pure_input_ids.shape[1] - t.prompt_len) >= MAX_TOTAL_TOKENS
             
             if is_eos_reached or is_absolute_limit:
                 # Finished, flush out result completely
@@ -451,12 +512,12 @@ def run_single_inference(
         eos_id = eos_id[0]
 
     for prompt_idx, p in enumerate(prompts):
+        is_resume = isinstance(p, dict) and "resume_ids" in p
+        
         # 1. Instantiate cleanly
         state, pid, monitor = run_experiment._build_global_components(
             mode, term_token_id, device, batch_size=1
         )
-        state.active_mask[0] = True
-        state.active_batch_indices = [0]
         
         hook_handle = None
         if control_vector is not None and mode in run_experiment._HOOK_MODES:
@@ -472,25 +533,56 @@ def run_single_inference(
             layer = base_model.language_model.layers[LAYER_ID] if hasattr(base_model, "language_model") else base_model.layers[LAYER_ID]
             hook_handle = layer.register_forward_hook(hook_fn)
 
-        try:
-            text = tokenizer.apply_chat_template(
-                p, tokenize=False, add_generation_prompt=True,
-                enable_thinking=ENABLE_THINKING,
-            )
-        except TypeError:
-            text = tokenizer.apply_chat_template(
-                p, tokenize=False, add_generation_prompt=True,
-            )
+        if is_resume:
+            resume_ids = p["resume_ids"]
+            input_len = p["input_len"]
+            if not isinstance(resume_ids, torch.Tensor):
+                resume_ids = torch.tensor(resume_ids, dtype=torch.long, device=device)
+            else:
+                resume_ids = resume_ids.to(device)
+            if resume_ids.ndim == 1:
+                resume_ids = resume_ids.unsqueeze(0)
             
-        tokenizer.padding_side = "left"
-        enc = tokenizer(text, return_tensors="pt").to(device)
-        tokenizer.padding_side = "right"
-        
-        input_ids = enc.input_ids
-        attention_mask = enc.attention_mask
-        input_len = input_ids.shape[1]
-        n_generated = 0
-        past_key_values = None
+            input_ids = resume_ids
+            attention_mask = torch.ones_like(input_ids)
+            
+            state.active_mask[0] = True
+            state.is_converged[0] = True
+            state.active_batch_indices = [0]
+            
+            # Restore trajectories
+            state.ema_trajectory[0] = p.get("ema_trajectory", []).copy()
+            state.alpha_trajectory[0] = p.get("alpha_trajectory", []).copy()
+            state.entropy_trajectory[0] = p.get("entropy_trajectory", []).copy()
+            state.intervention_start_step[0] = p.get("intervention_start", None)
+            state.intervention_end_step[0] = p.get("intervention_end", None)
+            state.step_count[0] = len(state.alpha_trajectory[0])
+            
+            n_generated = input_ids.shape[1] - input_len
+            past_key_values = None
+        else:
+            try:
+                text = tokenizer.apply_chat_template(
+                    p, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=ENABLE_THINKING,
+                )
+            except TypeError:
+                text = tokenizer.apply_chat_template(
+                    p, tokenize=False, add_generation_prompt=True,
+                )
+                
+            tokenizer.padding_side = "left"
+            enc = tokenizer(text, return_tensors="pt").to(device)
+            tokenizer.padding_side = "right"
+            
+            input_ids = enc.input_ids
+            attention_mask = enc.attention_mask
+            input_len = input_ids.shape[1]
+            n_generated = 0
+            past_key_values = None
+            
+            state.active_mask[0] = True
+            state.active_batch_indices = [0]
         
         try:
             # First Forward (Prefill)
@@ -509,6 +601,14 @@ def run_single_inference(
                 monitor(input_ids, logits_1)
                 
             next_tok = run_experiment._sample_batch_tokens(logits_1, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)
+            
+            # Check thinking budget and total limit on initial token
+            if n_generated >= MAX_THINKING_BUDGET:
+                generated_tokens = input_ids[0, input_len:]
+                if term_token_id is not None and term_token_id not in generated_tokens.tolist():
+                    next_tok[0, 0] = term_token_id
+                    state.is_converged[0] = True
+            
             input_ids = torch.cat([input_ids, next_tok], dim=1)
             attention_mask = torch.cat(
                 [attention_mask, torch.ones(1, 1, dtype=torch.long, device=device)], dim=1
@@ -516,7 +616,7 @@ def run_single_inference(
             n_generated += 1
             
             # Autoregressive Decode Loop
-            while next_tok.item() != eos_id and n_generated < AIME_MAX_TOKENS:
+            while next_tok.item() != eos_id and n_generated < MAX_TOTAL_TOKENS:
                 with torch.no_grad():
                     out = model(
                         input_ids=input_ids[:, -1:],
@@ -532,6 +632,13 @@ def run_single_inference(
                     monitor(input_ids, logits_1)
                 
                 next_tok = run_experiment._sample_batch_tokens(logits_1, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)
+                
+                if n_generated >= MAX_THINKING_BUDGET:
+                    generated_tokens = input_ids[0, input_len:]
+                    if term_token_id is not None and term_token_id not in generated_tokens.tolist():
+                        next_tok[0, 0] = term_token_id
+                        state.is_converged[0] = True
+                
                 input_ids = torch.cat([input_ids, next_tok], dim=1)
                 attention_mask = torch.cat(
                     [attention_mask, torch.ones(1, 1, dtype=torch.long, device=device)], dim=1

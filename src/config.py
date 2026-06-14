@@ -137,7 +137,10 @@ TEMPERATURE = 0.6
 TOP_P = 0.95
 TOP_K = 20                    # Hard cap on sampling pool (0 = disabled). Prevents long-tail noise tokens.
 MIN_P = 0.05                  # Dynamic floor: discard tokens with P < min_p * P_max. Adapts to model confidence.
-MAX_NEW_TOKENS = 4096*8
+MAX_THINKING_BUDGET = 32768   # Maximum thinking budget (e.g. 32768). If thinking exceeds this, we append </think> and continue.
+MAX_TOTAL_TOKENS = 40960      # Absolute maximum generated tokens (e.g. 40960). Generation stops here.
+
+MAX_NEW_TOKENS = MAX_TOTAL_TOKENS
 # ENDOFTEXT_ID resolved above dynamically from ACTIVE_MODEL
 # ENDOFTEXT_ID = 151643         # Fallback pad/eos token for Qwen-style models
 SAFE_SCORE_RANGE = 1e4        # Clamp range for Inf/NaN logits protection
@@ -170,7 +173,7 @@ REPETITION_NGRAM = 4          # N-gram size for repetition rate calculation
 
 # ======================== AIME Benchmark ========================
 DATASET_DIR = "./dataset"     # Path to AIME JSONL dataset files
-AIME_MAX_TOKENS = 4096*8        # Extended token budget for math reasoning
+AIME_MAX_TOKENS = MAX_THINKING_BUDGET        # Extended token budget for math reasoning
 BATCH_SIZE = 4                # Legacy static batch size (kept for reference)
 MAX_CONCURRENT_SEQS = 4      # Continuous batching: max slots active simultaneously
                                # Physical GPU throughput is ~= this number of parallel seqs

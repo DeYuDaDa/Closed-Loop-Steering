@@ -68,6 +68,8 @@ from config import (
     ALPHA_MAX,
     DATASET_DIR,
     AIME_MAX_TOKENS,
+    MAX_THINKING_BUDGET,
+    MAX_TOTAL_TOKENS,
     BATCH_SIZE,
     MAX_CONCURRENT_SEQS,
     TEMPERATURE,
@@ -873,40 +875,83 @@ def run_continuous_batching_generation(
     def _prefill_slot(slot_idx: int, prompt_idx: int) -> _Slot:
         """Tokenise + prefill one prompt into physical slot slot_idx."""
         p = prompts[prompt_idx]
-        try:
-            text = tokenizer.apply_chat_template(
-                p, tokenize=False, add_generation_prompt=True,
-                enable_thinking=ENABLE_THINKING,
-            )
-        except TypeError:
-            text = tokenizer.apply_chat_template(
-                p, tokenize=False, add_generation_prompt=True,
-            )
-        tokenizer.padding_side = "left"
-        enc = tokenizer(text, return_tensors="pt").to(device)
-        tokenizer.padding_side = "right"
+        is_resume = isinstance(p, dict) and "resume_ids" in p
 
-        _reset_slot_state(slot_idx)
-        # Tell the hook which physical index is active for this prefill forward.
-        state.active_batch_indices = [slot_idx]
+        if is_resume:
+            resume_ids = p["resume_ids"]
+            input_len = p["input_len"]
+            if not isinstance(resume_ids, torch.Tensor):
+                resume_ids = torch.tensor(resume_ids, dtype=torch.long, device=device)
+            else:
+                resume_ids = resume_ids.to(device)
+            if resume_ids.ndim == 1:
+                resume_ids = resume_ids.unsqueeze(0)
+            
+            input_ids = resume_ids
+            attention_mask = torch.ones_like(input_ids)
 
-        with torch.no_grad():
-            out = model(
+            _reset_slot_state(slot_idx)
+            # Restore trajectories
+            state.ema_trajectory[slot_idx] = p.get("ema_trajectory", []).copy()
+            state.alpha_trajectory[slot_idx] = p.get("alpha_trajectory", []).copy()
+            state.entropy_trajectory[slot_idx] = p.get("entropy_trajectory", []).copy()
+            state.intervention_start_step[slot_idx] = p.get("intervention_start", None)
+            state.intervention_end_step[slot_idx] = p.get("intervention_end", None)
+            state.step_count[slot_idx] = len(state.alpha_trajectory[slot_idx])
+            state.is_converged[slot_idx] = True
+            state.active_batch_indices = [slot_idx]
+
+            with torch.no_grad():
+                out = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=True,
+                    return_dict=True,
+                )
+            first_logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id)  # [1, V]
+
+            slot = _Slot(
+                prompt_idx=prompt_idx,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                past_key_values=out.past_key_values,
+                input_len=input_len,
+            )
+        else:
+            try:
+                text = tokenizer.apply_chat_template(
+                    p, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=ENABLE_THINKING,
+                )
+            except TypeError:
+                text = tokenizer.apply_chat_template(
+                    p, tokenize=False, add_generation_prompt=True,
+                )
+            tokenizer.padding_side = "left"
+            enc = tokenizer(text, return_tensors="pt").to(device)
+            tokenizer.padding_side = "right"
+
+            _reset_slot_state(slot_idx)
+            # Tell the hook which physical index is active for this prefill forward.
+            state.active_batch_indices = [slot_idx]
+
+            with torch.no_grad():
+                out = model(
+                    input_ids=enc.input_ids,
+                    attention_mask=enc.attention_mask,
+                    use_cache=True,
+                    return_dict=True,
+                )
+
+            first_logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id)  # [1, V]
+
+            slot = _Slot(
+                prompt_idx=prompt_idx,
                 input_ids=enc.input_ids,
                 attention_mask=enc.attention_mask,
-                use_cache=True,
-                return_dict=True,
+                past_key_values=out.past_key_values,
+                input_len=enc.input_ids.shape[1],
             )
-
-        first_logits_2d = _safe_score_range_clean(out.logits[:, -1, :], eos_id)  # [1, V]
-
-        slot = _Slot(
-            prompt_idx=prompt_idx,
-            input_ids=enc.input_ids,
-            attention_mask=enc.attention_mask,
-            past_key_values=out.past_key_values,
-            input_len=enc.input_ids.shape[1],
-        )
 
         # Prime StateMonitor with prefill logits so alpha is ready at decode step 0.
         if monitor is not None:
@@ -920,9 +965,9 @@ def run_continuous_batching_generation(
             )
             dummy_logits[slot_idx] = first_logits_2d[0]
             dummy_ids = torch.zeros(
-                (max_concurrent_seqs, enc.input_ids.shape[1]), dtype=torch.long, device=device
+                (max_concurrent_seqs, slot.input_ids.shape[1]), dtype=torch.long, device=device
             )
-            dummy_ids[slot_idx] = enc.input_ids[0]
+            dummy_ids[slot_idx] = slot.input_ids[0]
             monitor(dummy_ids, dummy_logits)
             state.active_mask = saved_mask
 
@@ -932,10 +977,10 @@ def run_continuous_batching_generation(
         slot.attention_mask = torch.ones(
             1, slot.input_ids.shape[1], dtype=torch.long, device=device
         )
-        slot.n_generated = 1
+        slot.n_generated = slot.input_ids.shape[1] - slot.input_len
 
         first_tok_val = first_tok.view(-1)[0].item()
-        if first_tok_val == eos_id or slot.n_generated >= AIME_MAX_TOKENS:
+        if first_tok_val == eos_id or slot.n_generated >= MAX_TOTAL_TOKENS:
             slot.done = True
 
         return slot
@@ -1018,12 +1063,23 @@ def run_continuous_batching_generation(
 
             # GPU-side EOS / max-len detection (single CPU sync).
             next_tokens = _sample_batch_tokens(logits_K, DO_SAMPLE, TEMPERATURE, TOP_P, TOP_K, MIN_P)  # [K, 1]
+
+            # Force think-end token if thinking budget reached
+            for list_i, slot_i in enumerate(active_indices):
+                s = active_list[list_i]
+                if s.n_generated >= MAX_THINKING_BUDGET:
+                    generated_tokens = s.input_ids[0, s.input_len:]
+                    if term_token_id is not None and term_token_id not in generated_tokens.tolist():
+                        next_tokens[list_i, 0] = term_token_id
+                        if state is not None:
+                            state.is_converged[slot_i] = True
+
             next_flat   = next_tokens.squeeze(1)                         # [K]
             eos_hit     = next_flat.eq(eos_tensor)                       # [K] bool GPU
             n_gen_arr   = torch.tensor(
                 [s.n_generated + 1 for s in active_list], dtype=torch.long, device=device
             )
-            max_hit   = n_gen_arr.ge(AIME_MAX_TOKENS)
+            max_hit   = n_gen_arr.ge(MAX_TOTAL_TOKENS)
             done_mask = eos_hit | max_hit                                # [K] bool GPU
             has_finished = done_mask.any().item()                        # single sync
 
@@ -1097,6 +1153,23 @@ def _cleanup_slot(slot: _Slot):
 
 # ======================== Full Experiment Pipeline ========================
 
+def is_problem_truncated(prob_detail, eos_token_id):
+    if prob_detail.get("correct", False):
+        return False
+    if "output_ids" not in prob_detail or "input_len" not in prob_detail:
+        return False
+    output_ids = prob_detail["output_ids"]
+    input_len = prob_detail["input_len"]
+    gen_tokens = output_ids[input_len:]
+    if eos_token_id in gen_tokens:
+        return False
+    if len(gen_tokens) >= 32768:  # Or config.MAX_THINKING_BUDGET
+        return True
+    return False
+
+
+# ======================== Full Experiment Pipeline ========================
+
 def run_full_experiment(
     model,
     tokenizer,
@@ -1110,6 +1183,7 @@ def run_full_experiment(
     use_batch: bool = False,
     use_sequential: bool = False,
     resume_path: str = None,
+    complete_truncated: bool = False,
 ):
     """
     Run the full AIME benchmark across all modes.
@@ -1300,23 +1374,62 @@ def run_full_experiment(
 
         # ---- Resume logic: skip already-completed problems ----
         completed_ids = set()
+        truncated_map = {}
         if resume_path and os.path.isfile(resume_path):
             existing_per_problem = mode_data.get("per_problem", [])
             if existing_per_problem:
                 # Pre-populate mode_data and mode_stats with completed results
+                kept_per_problem = []
                 for d in existing_per_problem:
-                    completed_ids.add(str(d["id"]))
-                    if d.get("correct", False):
-                        mode_stats["mode_correct"] += 1
-                    mode_stats["mode_tokens_total"] += d.get("num_tokens", 0)
-                    mode_stats["mode_repetitions"].append(d.get("repetition", 0.0))
+                    prob_id_str = str(d["id"])
+                    is_trunc = False
+                    if complete_truncated:
+                        is_trunc = is_problem_truncated(d, eos_id)
+                    
+                    if is_trunc:
+                        truncated_map[prob_id_str] = d
+                    else:
+                        completed_ids.add(prob_id_str)
+                        kept_per_problem.append(d)
+                        if d.get("correct", False):
+                            mode_stats["mode_correct"] += 1
+                        mode_stats["mode_tokens_total"] += d.get("num_tokens", 0)
+                        mode_stats["mode_repetitions"].append(d.get("repetition", 0.0))
+                mode_data["per_problem"] = kept_per_problem
                 print(f"  ↩️  [{mode}] Resuming: {len(completed_ids)} problems already done, "
-                      f"{len(dataset) - len(completed_ids)} remaining.")
+                      f"{len(dataset) - len(completed_ids)} remaining (including {len(truncated_map)} resumed).")
 
         # Filter dataset and prompts to only unfinished problems
-        if completed_ids:
-            filtered = [(i, p, d) for i, (p, d) in enumerate(zip(prompts, dataset))
-                        if str(d.get("id", i)) not in completed_ids]
+        if completed_ids or truncated_map:
+            filtered = []
+            for i, (p, d) in enumerate(zip(prompts, dataset)):
+                prob_id_str = str(d.get("id", i))
+                if prob_id_str in completed_ids:
+                    continue
+                if prob_id_str in truncated_map:
+                    old_detail = truncated_map[prob_id_str]
+                    resume_ids = old_detail["output_ids"]
+                    input_len = old_detail["input_len"]
+                    gen_tokens = resume_ids[input_len:]
+                    if term_token_id is not None and term_token_id not in gen_tokens:
+                        resume_ids = resume_ids + [term_token_id]
+                    
+                    filtered.append((
+                        i,
+                        {
+                            "resume_ids": resume_ids,
+                            "input_len": input_len,
+                            "original_prompt": p,
+                            "ema_trajectory": old_detail.get("ema_trajectory", []),
+                            "alpha_trajectory": old_detail.get("alpha_trajectory", []),
+                            "entropy_trajectory": old_detail.get("entropy_trajectory", []),
+                            "intervention_start": old_detail.get("intervention_start", None),
+                            "intervention_end": old_detail.get("intervention_end", None)
+                        },
+                        d
+                    ))
+                else:
+                    filtered.append((i, p, d))
             prompts   = [x[1] for x in filtered]
             active_dataset = [x[2] for x in filtered]
         else:
@@ -1432,6 +1545,16 @@ def run_full_experiment(
     return experiment_results
 
 
+def detect_dataset_path(resume_path: str, dataset_dir: str) -> str | None:
+    parent_dir_name = os.path.basename(os.path.dirname(resume_path))
+    available_datasets = list_aime_datasets(dataset_dir)
+    for ds_path in available_datasets:
+        ds_name = os.path.splitext(os.path.basename(ds_path))[0]
+        if ds_name.lower() in parent_dir_name.lower():
+            return ds_path
+    return None
+
+
 def main():
     """Main entry point for the AIME benchmark experiment."""
     set_seed(GLOBAL_SEED)
@@ -1455,10 +1578,16 @@ def main():
     parser.add_argument(
         "--resume",
         type=str,
+        nargs="+",
         default=None,
         metavar="PATH",
-        help="Path to an existing experiment_results.jsonl to resume from. "
+        help="Path(s) to existing experiment_results.jsonl to resume from. "
              "Already-completed problems (matched by 'id') will be skipped.",
+    )
+    parser.add_argument(
+        "--complete_truncated",
+        action="store_true",
+        help="Resume truncated runs by appending </think> if needed and continuing generation.",
     )
     parser.add_argument(
         "--use_batch",
@@ -1471,53 +1600,6 @@ def main():
         help="Use strictly sequential inference (batch_size=1). Overrides other batching methods.",
     )
     args = parser.parse_args()
-
-    # ---- Determine dataset ----
-    if args.dataset:
-        dataset_path = args.dataset
-    else:
-        # List available datasets and let user choose
-        available = list_aime_datasets(DATASET_DIR)
-        if not available:
-            print(f"❌ No .jsonl files found in {DATASET_DIR}")
-            sys.exit(1)
-        elif len(available) == 1:
-            dataset_path = available[0]
-        else:
-            print("Available AIME datasets:")
-            for i, f in enumerate(available):
-                print(f"  [{i}] {os.path.basename(f)}")
-            choice = input("Select dataset index: ").strip()
-            dataset_path = available[int(choice)]
-
-    dataset_name = os.path.splitext(os.path.basename(dataset_path))[0]
-    dataset_path_lower = dataset_path.lower()
-    
-    if "math500" in dataset_path_lower:
-        dataset_type = "math500"
-        print(f"\n📂 Loading MATH500 dataset: {dataset_path}")
-        dataset = load_math500_dataset(dataset_path)
-    elif "zebralogic" in dataset_path_lower:
-        dataset_type = "zebralogic"
-        print(f"\n📂 Loading ZebraLogic dataset: {dataset_path}")
-        dataset = load_zebra_dataset(dataset_path)
-    elif "boolean_expressions" in dataset_path_lower:
-        dataset_type = "boolean_expressions"
-        print(f"\n📂 Loading Boolean Expressions dataset: {dataset_path}")
-        dataset = load_boolean_expressions_dataset(dataset_path)
-    elif "cruxeval" in dataset_path_lower:
-        if "input" in dataset_path_lower:
-            dataset_type = "cruxeval_input"
-        else:
-            dataset_type = "cruxeval_output"
-        print(f"\n📂 Loading CruxEval dataset: {dataset_path} ({dataset_type})")
-        dataset = load_cruxeval_dataset(dataset_path)
-    else:
-        dataset_type = "aime"
-        print(f"\n📂 Loading AIME dataset: {dataset_path}")
-        dataset = load_aime_dataset(dataset_path)
-        
-    print(f"   Loaded {len(dataset)} problems from {dataset_name} ({dataset_type})")
 
     model_dtype = getattr(torch, DEFAULT_DTYPE)
     model = AutoModelForCausalLM.from_pretrained(
@@ -1543,40 +1625,179 @@ def main():
         dtype=model_dtype,
     )
 
-    # ---- Save results setup ----
-    timestamp = datetime.now().strftime(RESULTS_TIMESTAMP_FMT)
-    results_subdir = os.path.join(RESULTS_DIR, f"{dataset_name}_{timestamp}")
-    os.makedirs(results_subdir, exist_ok=True)
-    results_path = os.path.join(results_subdir, "experiment_results.jsonl")
+    modes = args.modes if args.modes else None
 
     # ---- Run experiments ----
-    modes = args.modes if args.modes else None
-    experiment_results = run_full_experiment(
-        model, tokenizer,
-        dataset=dataset,
-        dataset_name=dataset_name,
-        modes=modes,
-        control_vectors=control_vectors,
-        max_concurrent_seqs=MAX_CONCURRENT_SEQS,
-        dataset_type=dataset_type,
-        results_path=results_path,
-        use_batch=args.use_batch,
-        use_sequential=args.sequential,
-        resume_path=args.resume,
-    )
+    if args.resume:
+        resume_paths = args.resume if isinstance(args.resume, list) else [args.resume]
+        for resume_path in resume_paths:
+            print(f"\n📂 Processing resume path: {resume_path}")
+            curr_dataset_path = None
+            if args.dataset:
+                curr_dataset_path = args.dataset
+            else:
+                curr_dataset_path = detect_dataset_path(resume_path, DATASET_DIR)
+                if not curr_dataset_path:
+                    available = list_aime_datasets(DATASET_DIR)
+                    if not available:
+                        print(f"❌ No .jsonl files found in {DATASET_DIR}")
+                        sys.exit(1)
+                    elif len(available) == 1:
+                        curr_dataset_path = available[0]
+                    else:
+                        print(f"Could not auto-detect dataset for resume path {resume_path}.")
+                        print("Available AIME datasets:")
+                        for i, f in enumerate(available):
+                            print(f"  [{i}] {os.path.basename(f)}")
+                        choice = input("Select dataset index: ").strip()
+                        curr_dataset_path = available[int(choice)]
 
-    print(f"\n📊 Final results saved to {results_path}")
+            dataset_name = os.path.splitext(os.path.basename(curr_dataset_path))[0]
+            dataset_path_lower = curr_dataset_path.lower()
+            
+            if "math500" in dataset_path_lower:
+                dataset_type = "math500"
+                print(f"📂 Loading MATH500 dataset: {curr_dataset_path}")
+                dataset = load_math500_dataset(curr_dataset_path)
+            elif "zebralogic" in dataset_path_lower:
+                dataset_type = "zebralogic"
+                print(f"📂 Loading ZebraLogic dataset: {curr_dataset_path}")
+                dataset = load_zebra_dataset(curr_dataset_path)
+            elif "boolean_expressions" in dataset_path_lower:
+                dataset_type = "boolean_expressions"
+                print(f"📂 Loading Boolean Expressions dataset: {curr_dataset_path}")
+                dataset = load_boolean_expressions_dataset(curr_dataset_path)
+            elif "cruxeval" in dataset_path_lower:
+                if "input" in dataset_path_lower:
+                    dataset_type = "cruxeval_input"
+                else:
+                    dataset_type = "cruxeval_output"
+                print(f"📂 Loading CruxEval dataset: {curr_dataset_path} ({dataset_type})")
+                dataset = load_cruxeval_dataset(curr_dataset_path)
+            else:
+                dataset_type = "aime"
+                print(f"📂 Loading AIME dataset: {curr_dataset_path}")
+                dataset = load_aime_dataset(curr_dataset_path)
+                
+            print(f"   Loaded {len(dataset)} problems from {dataset_name} ({dataset_type})")
 
-    # ---- Print final report ----
-    print(f"\n{'='*60}")
-    print(f"  AIME BENCHMARK REPORT — {dataset_name}")
-    print(f"{'='*60}")
-    for mode, data in experiment_results.items():
-        acc = data["accuracy"]
-        n_correct = data["correct_count"]
-        n_total = data["total_count"]
-        print(f"  {mode:<22} Pass@1: {acc:.2%} ({n_correct}/{n_total})")
-    print(f"{'='*60}")
+            # Determine results_path (in-place update if complete_truncated is enabled)
+            if args.complete_truncated:
+                results_path = resume_path
+            else:
+                timestamp = datetime.now().strftime(RESULTS_TIMESTAMP_FMT)
+                results_subdir = os.path.join(RESULTS_DIR, f"{dataset_name}_{timestamp}")
+                os.makedirs(results_subdir, exist_ok=True)
+                results_path = os.path.join(results_subdir, "experiment_results.jsonl")
+
+            experiment_results = run_full_experiment(
+                model, tokenizer,
+                dataset=dataset,
+                dataset_name=dataset_name,
+                modes=modes,
+                control_vectors=control_vectors,
+                max_concurrent_seqs=MAX_CONCURRENT_SEQS,
+                dataset_type=dataset_type,
+                results_path=results_path,
+                use_batch=args.use_batch,
+                use_sequential=args.sequential,
+                resume_path=resume_path,
+                complete_truncated=args.complete_truncated,
+            )
+
+            print(f"\n📊 Results saved to {results_path}")
+
+            # ---- Print report for this run ----
+            print(f"\n{'='*60}")
+            print(f"  AIME BENCHMARK REPORT — {dataset_name} (Resumed: {os.path.basename(resume_path)})")
+            print(f"{'='*60}")
+            for mode_name, data in experiment_results.items():
+                acc = data["accuracy"]
+                n_correct = data["correct_count"]
+                n_total = data["total_count"]
+                print(f"  {mode_name:<22} Pass@1: {acc:.2%} ({n_correct}/{n_total})")
+            print(f"{'='*60}")
+    else:
+        # ---- Determine dataset ----
+        if args.dataset:
+            dataset_path = args.dataset
+        else:
+            # List available datasets and let user choose
+            available = list_aime_datasets(DATASET_DIR)
+            if not available:
+                print(f"❌ No .jsonl files found in {DATASET_DIR}")
+                sys.exit(1)
+            elif len(available) == 1:
+                dataset_path = available[0]
+            else:
+                print("Available AIME datasets:")
+                for i, f in enumerate(available):
+                    print(f"  [{i}] {os.path.basename(f)}")
+                choice = input("Select dataset index: ").strip()
+                dataset_path = available[int(choice)]
+
+        dataset_name = os.path.splitext(os.path.basename(dataset_path))[0]
+        dataset_path_lower = dataset_path.lower()
+        
+        if "math500" in dataset_path_lower:
+            dataset_type = "math500"
+            print(f"\n📂 Loading MATH500 dataset: {dataset_path}")
+            dataset = load_math500_dataset(dataset_path)
+        elif "zebralogic" in dataset_path_lower:
+            dataset_type = "zebralogic"
+            print(f"\n📂 Loading ZebraLogic dataset: {dataset_path}")
+            dataset = load_zebra_dataset(dataset_path)
+        elif "boolean_expressions" in dataset_path_lower:
+            dataset_type = "boolean_expressions"
+            print(f"\n📂 Loading Boolean Expressions dataset: {dataset_path}")
+            dataset = load_boolean_expressions_dataset(dataset_path)
+        elif "cruxeval" in dataset_path_lower:
+            if "input" in dataset_path_lower:
+                dataset_type = "cruxeval_input"
+            else:
+                dataset_type = "cruxeval_output"
+            print(f"\n📂 Loading CruxEval dataset: {dataset_path} ({dataset_type})")
+            dataset = load_cruxeval_dataset(dataset_path)
+        else:
+            dataset_type = "aime"
+            print(f"\n📂 Loading AIME dataset: {dataset_path}")
+            dataset = load_aime_dataset(dataset_path)
+            
+        print(f"   Loaded {len(dataset)} problems from {dataset_name} ({dataset_type})")
+
+        # ---- Save results setup ----
+        timestamp = datetime.now().strftime(RESULTS_TIMESTAMP_FMT)
+        results_subdir = os.path.join(RESULTS_DIR, f"{dataset_name}_{timestamp}")
+        os.makedirs(results_subdir, exist_ok=True)
+        results_path = os.path.join(results_subdir, "experiment_results.jsonl")
+
+        experiment_results = run_full_experiment(
+            model, tokenizer,
+            dataset=dataset,
+            dataset_name=dataset_name,
+            modes=modes,
+            control_vectors=control_vectors,
+            max_concurrent_seqs=MAX_CONCURRENT_SEQS,
+            dataset_type=dataset_type,
+            results_path=results_path,
+            use_batch=args.use_batch,
+            use_sequential=args.sequential,
+            resume_path=None,
+            complete_truncated=False,
+        )
+
+        print(f"\n📊 Final results saved to {results_path}")
+
+        # ---- Print final report ----
+        print(f"\n{'='*60}")
+        print(f"  AIME BENCHMARK REPORT — {dataset_name}")
+        print(f"{'='*60}")
+        for mode_name, data in experiment_results.items():
+            acc = data["accuracy"]
+            n_correct = data["correct_count"]
+            n_total = data["total_count"]
+            print(f"  {mode_name:<22} Pass@1: {acc:.2%} ({n_correct}/{n_total})")
+        print(f"{'='*60}")
 
     print("\n🎉 Experiment completed successfully!")
 
